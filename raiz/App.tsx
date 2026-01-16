@@ -37,7 +37,8 @@ const INITIAL_EVENT: BingoEvent = {
   currentPrizeStep: 'QUADRA',
   winners: [],
   startMode: 'MANUAL',
-  autoInterval: 5
+  autoInterval: 5,
+  onlineCount: 0
 };
 
 const App: React.FC = () => {
@@ -71,7 +72,7 @@ const App: React.FC = () => {
   const [purchaseQty, setPurchaseQty] = useState(1);
   const [depositAmount, setDepositAmount] = useState(30);
 
-  // Sincronização de Dados com "Backend"
+  // Sincronização de Dados com "Backend" (WebSocket Mock)
   useEffect(() => {
     const unsubVisual = db.onSnapshot('config_visual', VISUAL_ID, (data) => {
       if (data) {
@@ -102,6 +103,38 @@ const App: React.FC = () => {
     }
     return () => { unsubVisual(); unsubEvent(); unsubCards(); };
   }, [user?.id]);
+
+  // Sistema de Presença Centralizado (Heartbeat para simular WebSocket Connection Count)
+  useEffect(() => {
+    if (!user) return;
+
+    const updatePresence = async () => {
+      await db.set('presence', user.id, { lastSeen: Date.now() });
+    };
+
+    updatePresence();
+    const interval = setInterval(updatePresence, 10000); // 10s heartbeat
+
+    return () => clearInterval(interval);
+  }, [user?.id]);
+
+  // Agregador de Contagem Online (Processado pelo Admin ou sistema centralizado)
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+
+    const aggregatePresence = async () => {
+      const allPresence = await db.getAll('presence') as any[];
+      const now = Date.now();
+      const activeUsersCount = allPresence.filter(p => (now - p.lastSeen) < 30000).length; // Considera ativo se visto nos últimos 30s
+      
+      if (event.onlineCount !== activeUsersCount) {
+        await db.set('estado_bingo', EVENT_ID, { ...event, onlineCount: activeUsersCount });
+      }
+    };
+
+    const interval = setInterval(aggregatePresence, 15000); // Atualiza globalmente a cada 15s
+    return () => clearInterval(interval);
+  }, [isAdminAuthenticated, event]);
 
   // Lógica de Início Automático (Apenas no contexto Admin se estiver ativo)
   useEffect(() => {
@@ -227,9 +260,10 @@ const App: React.FC = () => {
       startMode: event.startMode, 
       autoInterval: event.autoInterval, 
       cardPrice: event.cardPrice,
-      nextAutoStart: nextStart
+      nextAutoStart: nextStart,
+      onlineCount: event.onlineCount
     });
-  }, [event.startMode, event.autoInterval, event.cardPrice]);
+  }, [event.startMode, event.autoInterval, event.cardPrice, event.onlineCount]);
 
   const handleStartGame = useCallback(async () => {
     if (allCards.length === 0) return;
@@ -248,12 +282,12 @@ const App: React.FC = () => {
     const nextBall = available[Math.floor(Math.random() * available.length)];
     const newDrawn = [...event.drawnBalls, nextBall];
     
-    // Anúncio e processamento centralizado
+    // Anúncio e processamento centralizado (Fonte única da verdade)
     announceBall(nextBall);
     const winners = checkWinners(allCards, newDrawn, event.currentPrizeStep);
     const batch = db.batch();
     
-    // Atualiza marcação nas cartelas globais para todos os usuários
+    // Atualiza marcação nas cartelas globais para todos os usuários em tempo real
     allCards.forEach(c => {
       if (c.numbers.includes(nextBall)) {
         batch.update('cartelas', c.id, { markedNumbers: [...c.markedNumbers, nextBall] });
@@ -368,7 +402,15 @@ const App: React.FC = () => {
         <div className="max-w-6xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
              <Trophy style={{ color: visual.primaryColor }} size={24} />
-             <span className="text-xl font-black text-slate-900">{visual.appName}</span>
+             <div className="flex flex-col">
+               <span className="text-xl font-black text-slate-900 leading-none">{visual.appName}</span>
+               <div className="flex items-center gap-1.5 mt-0.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-tight">
+                    {event.onlineCount || 0} jogadores conectados
+                  </span>
+               </div>
+             </div>
           </div>
           <div className="flex items-center gap-4">
              <div className="text-right">
@@ -484,3 +526,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+
