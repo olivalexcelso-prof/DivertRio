@@ -66,6 +66,7 @@ export interface BingoEvent {
   startMode: 'MANUAL' | 'AUTO';
   autoInterval: number; // Intervalo em minutos
   nextAutoStart?: number; // Timestamp do próximo início
+  onlineCount?: number; // Campo para rastrear jogadores conectados em tempo real
 }
 
 export interface WinnerRecord {
