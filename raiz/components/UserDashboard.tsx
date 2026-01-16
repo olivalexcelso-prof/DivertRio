@@ -2,7 +2,7 @@
 import React, { useMemo } from 'react';
 import { User, Card, BingoEvent } from '../types';
 import { BingoCard } from './BingoCard';
-import { Layers, Banknote, Ticket } from 'lucide-react';
+import { Layers, Banknote, Ticket, Users } from 'lucide-react';
 import { PRIZE_LABELS, ACCUMULATED_THRESHOLD } from '../constants';
 import { getCardScore } from '../services/bingoService';
 
@@ -50,7 +50,14 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ user, cards, event
            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><Layers size={24} /></div>
            <div>
               <h2 className="text-xl font-black text-indigo-900">Meu Jogo</h2>
-              <p className="text-xs text-gray-500">{userSeries} séries em sua posse.</p>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-xs text-gray-500">{userSeries} séries em sua posse.</p>
+                <span className="text-gray-200">|</span>
+                <div className="flex items-center gap-1 text-[10px] font-black text-indigo-400 uppercase tracking-tighter">
+                  <Users size={12} />
+                  <span>{event.onlineCount || 0} jogando agora</span>
+                </div>
+              </div>
            </div>
         </div>
         <div className="text-right">
