@@ -15,6 +15,7 @@ export interface User {
   id: string;
   name: string;
   whatsapp: string;
+  password?: string; // Campo de senha adicionado
   email?: string;
   pixKey?: string;
   balance: number;
