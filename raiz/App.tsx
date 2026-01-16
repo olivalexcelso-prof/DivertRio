@@ -6,7 +6,7 @@ import { announceBall, announceWinner, announcePrizes } from './services/ttsServ
 import { AdminPanel } from './components/AdminPanel';
 import { UserDashboard } from './components/UserDashboard';
 import { FinalScoreboard } from './components/FinalScoreboard';
-import { LayoutDashboard, Settings, Trophy, ShoppingBag, Minus, Plus, Wallet, ArrowRight, PlusCircle } from 'lucide-react';
+import { LayoutDashboard, Settings, Trophy, ShoppingBag, Minus, Plus, Wallet, ArrowRight, PlusCircle, Lock, User as UserIcon } from 'lucide-react';
 import { db } from './services/firebaseService';
 import { PRIZE_LABELS } from './constants';
 
@@ -14,6 +14,9 @@ const EVENT_ID = 'main-event';
 const VISUAL_ID = 'config-visual';
 const PACKAGE_ID = formatPackageId(1);
 const MIN_DEPOSIT = 30;
+
+const ADMIN_USER = 'admin';
+const ADMIN_PASS = '132435OLI';
 
 const DEFAULT_VISUAL: VisualConfig = {
   appName: 'Bingo Beneficente',
@@ -51,10 +54,18 @@ const App: React.FC = () => {
   const [announcement, setAnnouncement] = useState<string>('');
   const [showFinalScoreboard, setShowFinalScoreboard] = useState(false);
   
-  const [step, setStep] = useState<'LOGIN' | 'PIX'>('LOGIN');
-  const [loginName, setLoginName] = useState('');
+  // Estados de Autenticação
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
   const [loginWhatsapp, setLoginWhatsapp] = useState('');
-  const [pixKey, setPixKey] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [registerName, setRegisterName] = useState('');
+  const [registerPix, setRegisterPix] = useState('');
+  
+  // Estado de Autenticação Admin
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [adminUserField, setAdminUserField] = useState('');
+  const [adminPassField, setAdminPassField] = useState('');
+
   const [purchaseQty, setPurchaseQty] = useState(1);
   const [depositAmount, setDepositAmount] = useState(30);
 
@@ -101,6 +112,57 @@ const App: React.FC = () => {
     }
   }, [event.status, event.startMode, event.nextAutoStart, allCards.length]);
 
+  const handleUserAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const allUsers = await db.getAll('users') as User[];
+    
+    if (authMode === 'REGISTER') {
+      const exists = allUsers.find(u => u.whatsapp === loginWhatsapp);
+      if (exists) {
+        setAnnouncement("Este WhatsApp já está cadastrado.");
+        return;
+      }
+      const newUser: User = { 
+        id: crypto.randomUUID(), 
+        name: registerName, 
+        whatsapp: loginWhatsapp, 
+        password: loginPassword,
+        pixKey: registerPix, 
+        balance: 0, 
+        createdAt: Date.now() 
+      };
+      await db.set('users', newUser.id, newUser);
+      setUser(newUser);
+    } else {
+      const found = allUsers.find(u => u.whatsapp === loginWhatsapp && u.password === loginPassword);
+      if (found) {
+        setUser(found);
+      } else {
+        setAnnouncement("WhatsApp ou Senha incorretos.");
+        setTimeout(() => setAnnouncement(''), 3000);
+      }
+    }
+  };
+
+  const handleAdminAuth = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminUserField === ADMIN_USER && adminPassField === ADMIN_PASS) {
+      setIsAdminAuthenticated(true);
+      setAdminUserField('');
+      setAdminPassField('');
+    } else {
+      setAnnouncement("Credenciais administrativas inválidas.");
+      setTimeout(() => setAnnouncement(''), 3000);
+    }
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    localStorage.removeItem('bingo_user_session');
+    setIsAdminAuthenticated(false);
+    setActiveTab('USER');
+  };
+
   const handleDepositPix = async () => {
     if (!user) return;
     setAnnouncement(`Confirmando depósito de R$ ${depositAmount}...`);
@@ -121,7 +183,6 @@ const App: React.FC = () => {
     
     setAnnouncement("Processando compra...");
     
-    // Pequeno delay para garantir que a UI renderize a mensagem antes do loop de processamento
     setTimeout(async () => {
       try {
         const allSeries = await db.getAll('series');
@@ -205,21 +266,15 @@ const App: React.FC = () => {
       } else if (win.prize === 'QUINA') {
         eventUpdates.currentPrizeStep = 'BINGO';
       } else { 
-        // Partida Encerrada
         eventUpdates.status = 'FINISHED'; 
         setIsAutoDrawing(false);
         setShowFinalScoreboard(true);
 
-        // CORREÇÃO OBRIGATÓRIA: Lógica de Crédito do Operador
-        // Somar todas as premiações ganhas na partida e creditar o valor total no saldo.
         const totalSeries = Math.floor(allCards.length / 6);
         const totalRevenue = totalSeries * event.cardPrice;
-        
-        // Relação de valores conforme exemplo (Quadra: 25/300, Linha: 60/300, Bingo: 150/300)
         const vQuadra = totalRevenue * (25 / 300);
         const vLinha = totalRevenue * (60 / 300);
         const vBingo = totalRevenue * (150 / 300);
-        
         const valorTotalGanho = vQuadra + vLinha + vBingo;
         
         if (valorTotalGanho > 0) {
@@ -248,24 +303,46 @@ const App: React.FC = () => {
           <div className="text-center mb-8">
             <Trophy size={48} className="mx-auto mb-4" style={{ color: visual.primaryColor }} />
             <h1 className="text-3xl font-black text-slate-900">{visual.appName}</h1>
+            <p className="text-slate-400 font-bold text-xs uppercase mt-2 tracking-widest">
+              {authMode === 'LOGIN' ? 'Acesse sua conta' : 'Crie seu cadastro'}
+            </p>
           </div>
-          {step === 'LOGIN' ? (
-            <form onSubmit={(e) => { e.preventDefault(); setStep('PIX'); }} className="space-y-4">
-              <input type="text" required value={loginName} onChange={e => setLoginName(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none" placeholder="Nome" />
-              <input type="tel" required value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none" placeholder="WhatsApp" />
-              <button type="submit" className="w-full py-4 rounded-2xl font-black text-white shadow-xl" style={{ backgroundColor: visual.primaryColor }}>Próximo</button>
-            </form>
-          ) : (
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              const newUser: User = { id: crypto.randomUUID(), name: loginName, whatsapp: loginWhatsapp, pixKey, balance: 0, createdAt: Date.now() };
-              await db.set('users', newUser.id, newUser);
-              setUser(newUser);
-            }} className="space-y-4">
-              <input type="text" required value={pixKey} onChange={e => setPixKey(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none" placeholder="Chave PIX" />
-              <button type="submit" className="w-full py-4 rounded-2xl font-black text-white shadow-xl" style={{ backgroundColor: visual.primaryColor }}>Entrar</button>
-            </form>
-          )}
+          
+          <form onSubmit={handleUserAuth} className="space-y-4">
+            {authMode === 'REGISTER' && (
+              <div className="relative">
+                <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                <input type="text" required value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="Seu Nome Completo" />
+              </div>
+            )}
+            
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 font-bold text-sm">WA</span>
+              <input type="tel" required value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="WhatsApp" />
+            </div>
+
+            <div className="relative">
+              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+              <input type="password" required value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="Senha" />
+            </div>
+
+            {authMode === 'REGISTER' && (
+              <div className="relative">
+                <Wallet className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                <input type="text" required value={registerPix} onChange={e => setRegisterPix(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="Chave PIX para Recebimento" />
+              </div>
+            )}
+
+            <button type="submit" className="w-full py-4 rounded-2xl font-black text-white shadow-xl transition-transform active:scale-95" style={{ backgroundColor: visual.primaryColor }}>
+              {authMode === 'LOGIN' ? 'Entrar no Jogo' : 'Finalizar Cadastro'}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+             <button onClick={() => setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN')} className="text-xs font-black text-indigo-600 uppercase tracking-widest hover:underline">
+                {authMode === 'LOGIN' ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Faça Login'}
+             </button>
+          </div>
         </div>
       </div>
     );
@@ -277,7 +354,7 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full text-center shadow-2xl">
             <h2 className="text-xl font-black text-slate-900 mb-6">{announcement}</h2>
-            {announcement.includes('Sucesso') || announcement.includes('insuficiente') ? (
+            {announcement.includes('Sucesso') || announcement.includes('insuficiente') || announcement.includes('inválidas') || announcement.includes('cadastrado') ? (
               <button onClick={() => setAnnouncement('')} className="w-full py-4 text-white rounded-2xl font-bold" style={{ backgroundColor: visual.primaryColor }}>Fechar</button>
             ) : null}
           </div>
@@ -330,21 +407,53 @@ const App: React.FC = () => {
             </div>
           </div>
         ) : (
-          <AdminPanel 
-            event={event} 
-            users={[user]} 
-            cards={allCards} 
-            onDrawBall={handleDrawBall} 
-            onResetEvent={handleResetEvent} 
-            onUpdatePrizeStep={(s) => db.set('estado_bingo', EVENT_ID, { ...event, currentPrizeStep: s })} 
-            isAutoDrawing={isAutoDrawing} 
-            onToggleAutoDraw={() => setIsAutoDrawing(!isAutoDrawing)} 
-            onAddSeries={() => {}} 
-            onStartGame={handleStartGame} 
-            visualConfig={visual} 
-            onUpdateVisual={(v) => db.set('config_visual', VISUAL_ID, v)}
-            onUpdateEvent={(e) => db.set('estado_bingo', EVENT_ID, e)}
-          />
+          isAdminAuthenticated ? (
+            <AdminPanel 
+              event={event} 
+              users={[user]} 
+              cards={allCards} 
+              onDrawBall={handleDrawBall} 
+              onResetEvent={handleResetEvent} 
+              onUpdatePrizeStep={(s) => db.set('estado_bingo', EVENT_ID, { ...event, currentPrizeStep: s })} 
+              isAutoDrawing={isAutoDrawing} 
+              onToggleAutoDraw={() => setIsAutoDrawing(!isAutoDrawing)} 
+              onAddSeries={() => {}} 
+              onStartGame={handleStartGame} 
+              visualConfig={visual} 
+              onUpdateVisual={(v) => db.set('config_visual', VISUAL_ID, v)}
+              onUpdateEvent={(e) => db.set('estado_bingo', EVENT_ID, e)}
+            />
+          ) : (
+            <div className="max-w-md mx-auto bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-100 text-center">
+               <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                 <Lock size={32} />
+               </div>
+               <h2 className="text-2xl font-black text-slate-900 mb-2">Acesso Restrito</h2>
+               <p className="text-slate-400 font-medium text-sm mb-8 leading-relaxed">
+                 O Painel Administrativo é de uso exclusivo para gerenciamento interno do evento.
+               </p>
+               
+               <form onSubmit={handleAdminAuth} className="space-y-4">
+                  <input 
+                    type="text" 
+                    value={adminUserField} 
+                    onChange={e => setAdminUserField(e.target.value)} 
+                    placeholder="Usuário Admin"
+                    className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none focus:ring-2 ring-indigo-500/20"
+                  />
+                  <input 
+                    type="password" 
+                    value={adminPassField} 
+                    onChange={e => setAdminPassField(e.target.value)} 
+                    placeholder="Senha Admin"
+                    className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none focus:ring-2 ring-indigo-500/20"
+                  />
+                  <button type="submit" className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black shadow-xl">
+                    Autenticar Operador
+                  </button>
+               </form>
+            </div>
+          )
         )}
       </main>
 
@@ -358,6 +467,9 @@ const App: React.FC = () => {
           </button>
           <button onClick={() => setActiveTab('ADMIN')} className={`flex flex-col items-center gap-1 ${activeTab === 'ADMIN' ? '' : 'text-slate-300'}`} style={{ color: activeTab === 'ADMIN' ? visual.primaryColor : undefined }}>
             <Settings size={24} /><span className="text-[10px] font-black uppercase text-center">Painel</span>
+          </button>
+          <button onClick={handleLogout} className="flex flex-col items-center gap-1 text-slate-300 hover:text-rose-500 transition-colors">
+            <ArrowRight size={24} /><span className="text-[10px] font-black uppercase">Sair</span>
           </button>
         </div>
       </nav>
