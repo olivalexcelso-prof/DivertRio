@@ -12,6 +12,20 @@ import { PRIZE_LABELS } from './constants';
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = '132435OLI';
 
+const INITIAL_EVENT: BingoEvent = {
+  id: 'GLOBAL_BINGO_SESSION',
+  name: 'Grande Bingo Beneficente',
+  cardPrice: 10,
+  maxCards: 1000,
+  drawnBalls: [],
+  status: 'SETUP',
+  currentPrizeStep: 'QUADRA',
+  winners: [],
+  startMode: 'MANUAL',
+  autoInterval: 5,
+  onlineCount: 1
+};
+
 const DEFAULT_VISUAL: VisualConfig = {
   appName: 'Bingo Beneficente',
   primaryColor: '#4f46e5',
@@ -29,13 +43,14 @@ const App: React.FC = () => {
   
   const [visual, setVisual] = useState<VisualConfig>(DEFAULT_VISUAL);
   const [activeTab, setActiveTab] = useState<'USER' | 'ADMIN' | 'STORE'>('USER');
-  const [event, setEvent] = useState<BingoEvent | null>(null);
+  const [event, setEvent] = useState<BingoEvent>(INITIAL_EVENT);
   const [allCards, setAllCards] = useState<Card[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
   const [announcement, setAnnouncement] = useState<string>('');
   const [showFinalScoreboard, setShowFinalScoreboard] = useState(false);
   const [isAdminAutoDrawing, setIsAdminAutoDrawing] = useState(false);
   
-  // Autenticação
+  // Interface
   const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
   const [loginWhatsapp, setLoginWhatsapp] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -46,11 +61,12 @@ const App: React.FC = () => {
   const [adminPassField, setAdminPassField] = useState('');
   const [purchaseQty, setPurchaseQty] = useState(1);
 
-  // SINCRONIZAÇÃO VIA WEBSOCKET
   useEffect(() => {
-    socket.on('initialState', (data: { event: BingoEvent, cards: Card[] }) => {
+    socket.on('initialState', (data: { event: BingoEvent, cards: Card[], users: User[] }) => {
       setEvent(data.event);
       setAllCards(data.cards);
+      setAllUsers(data.users);
+      if (data.event.status === 'FINISHED') setShowFinalScoreboard(true);
     });
 
     socket.on('ballDrawn', (data: { ball: number, event: BingoEvent }) => {
@@ -59,15 +75,16 @@ const App: React.FC = () => {
     });
 
     socket.on('winnersAnnounced', (winners: WinnerRecord[]) => {
-      if (winners.length > 0 && event) {
+      if (winners.length > 0) {
         announceWinner(event.currentPrizeStep, winners[0].userName);
         setAnnouncement(`VITÓRIA! ${winners[0].userName} conquistou ${PRIZE_LABELS[event.currentPrizeStep]}!`);
         setTimeout(() => setAnnouncement(''), 3000);
       }
     });
 
+    socket.on('usersUpdate', (users: User[]) => setAllUsers(users));
     socket.on('cardsUpdate', (cards: Card[]) => setAllCards(cards));
-    socket.on('onlineCountUpdate', (count: number) => setEvent(prev => prev ? ({ ...prev, onlineCount: count }) : null));
+    socket.on('onlineCountUpdate', (count: number) => setEvent(prev => ({ ...prev, onlineCount: count })));
     socket.on('gameStarted', (evt: BingoEvent) => setEvent(evt));
     socket.on('autoStatusUpdate', (status: boolean) => setIsAdminAutoDrawing(status));
     socket.on('gameReset', (evt: BingoEvent) => {
@@ -90,22 +107,13 @@ const App: React.FC = () => {
       setUser(prev => prev ? ({ ...prev, balance }) : null);
     });
 
-    socket.on('purchaseSuccess', () => {
-      setAnnouncement("Sucesso! Séries adquiridas.");
-      setTimeout(() => setAnnouncement(''), 2000);
-    });
-
+    socket.on('purchaseSuccess', () => setAnnouncement("Sucesso!"));
     socket.on('authError', (err: string) => alert(err));
 
     return () => {
       socket.off('initialState');
       socket.off('ballDrawn');
       socket.off('winnersAnnounced');
-      socket.off('cardsUpdate');
-      socket.off('onlineCountUpdate');
-      socket.off('gameStarted');
-      socket.off('autoStatusUpdate');
-      socket.off('gameReset');
     };
   }, [event]);
 
@@ -119,12 +127,10 @@ const App: React.FC = () => {
   };
 
   const handlePurchase = () => {
-    if (user && event?.status === 'SETUP') {
+    if (user && event.status === 'SETUP') {
       socket.emit('buySeries', { userId: user.id, qty: purchaseQty });
     }
   };
-
-  if (!event) return <div className="min-h-screen flex items-center justify-center font-black">Conectando ao servidor...</div>;
 
   if (!user) {
     return (
@@ -133,7 +139,6 @@ const App: React.FC = () => {
           <div className="text-center mb-8">
             <Trophy size={48} className="mx-auto mb-4 text-indigo-600" />
             <h1 className="text-3xl font-black text-slate-900">{visual.appName}</h1>
-            <p className="text-slate-400 font-bold text-xs uppercase mt-2 tracking-widest">{authMode === 'LOGIN' ? 'Login' : 'Cadastro'}</p>
           </div>
           <form onSubmit={handleAuth} className="space-y-4">
             {authMode === 'REGISTER' && (
@@ -154,8 +159,10 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 pb-24" style={{ backgroundColor: visual.backgroundColor }}>
       {announcement && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-white p-8 rounded-[2rem] text-center font-black">{announcement}</div>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white p-8 rounded-[2rem] text-center font-black shadow-2xl animate-in zoom-in duration-300">
+            {announcement}
+          </div>
         </div>
       )}
 
@@ -164,7 +171,7 @@ const App: React.FC = () => {
           <Trophy className="text-indigo-600" size={24} />
           <div>
             <h1 className="text-xl font-black">{visual.appName}</h1>
-            <p className="text-[10px] font-black text-emerald-500 uppercase">{event.onlineCount} jogadores online</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase">{event.onlineCount} online</p>
           </div>
         </div>
         <div className="text-right">
@@ -179,7 +186,7 @@ const App: React.FC = () => {
         {activeTab === 'ADMIN' && (
           isAdminAuthenticated ? (
             <AdminPanel 
-              event={event} users={[]} cards={allCards}
+              event={event} users={allUsers} cards={allCards}
               onDrawBall={() => socket.emit('adminDrawBall')}
               onResetEvent={() => socket.emit('adminReset')}
               onUpdatePrizeStep={(s) => socket.emit('adminUpdatePrize', s)}
@@ -193,18 +200,18 @@ const App: React.FC = () => {
             />
           ) : (
             <div className="max-w-md mx-auto bg-white p-8 rounded-[2rem] shadow-xl">
-              <h2 className="text-2xl font-black mb-6">Acesso Admin</h2>
-              <input type="text" placeholder="Admin" value={adminUserField} onChange={e => setAdminUserField(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl mb-4" />
-              <input type="password" placeholder="Senha" value={adminPassField} onChange={e => setAdminPassField(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl mb-4" />
-              <button onClick={() => { if(adminUserField === ADMIN_USER && adminPassField === ADMIN_PASS) setIsAdminAuthenticated(true) }} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl">Acessar</button>
+              <h2 className="text-2xl font-black mb-6 text-center">Acesso Admin</h2>
+              <input type="text" placeholder="Admin" value={adminUserField} onChange={e => setAdminUserField(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl mb-4 outline-none" />
+              <input type="password" placeholder="Senha" value={adminPassField} onChange={e => setAdminPassField(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl mb-4 outline-none" />
+              <button onClick={() => { if(adminUserField === ADMIN_USER && adminPassField === ADMIN_PASS) setIsAdminAuthenticated(true) }} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl">Acessar Painel</button>
             </div>
           )
         )}
 
         {activeTab === 'STORE' && (
-          <div className="max-w-md mx-auto bg-white p-8 rounded-[2.5rem] shadow-xl text-center">
+          <div className="max-w-md mx-auto bg-white p-8 rounded-[2.5rem] shadow-xl text-center border">
             <ShoppingBag size={48} className="mx-auto text-indigo-600 mb-4" />
-            <h2 className="text-2xl font-black mb-8">Comprar Séries</h2>
+            <h2 className="text-2xl font-black mb-8">Loja de Séries</h2>
             <div className="flex items-center justify-between bg-slate-50 p-6 rounded-2xl mb-8">
               <button onClick={() => setPurchaseQty(Math.max(1, purchaseQty - 1))} className="w-12 h-12 bg-white rounded-xl shadow font-black">-</button>
               <span className="text-4xl font-black">{purchaseQty}</span>
@@ -222,7 +229,7 @@ const App: React.FC = () => {
         <button onClick={() => { localStorage.removeItem('bingo_user_session'); setUser(null); }} className="flex flex-col items-center text-slate-300"><ArrowRight size={24} /><span className="text-[9px] font-black uppercase">Sair</span></button>
       </nav>
 
-      {showFinalScoreboard && event && (
+      {showFinalScoreboard && (
         <FinalScoreboard event={event} onClose={() => setShowFinalScoreboard(false)} onReset={() => socket.emit('adminReset')} />
       )}
     </div>
