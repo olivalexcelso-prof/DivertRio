@@ -114,6 +114,17 @@ const App: React.FC = () => {
       socket.off('initialState');
       socket.off('ballDrawn');
       socket.off('winnersAnnounced');
+      socket.off('usersUpdate');
+      socket.off('cardsUpdate');
+      socket.off('onlineCountUpdate');
+      socket.off('gameStarted');
+      socket.off('autoStatusUpdate');
+      socket.off('gameReset');
+      socket.off('registrationSuccess');
+      socket.off('loginSuccess');
+      socket.off('balanceUpdate');
+      socket.off('purchaseSuccess');
+      socket.off('authError');
     };
   }, [event]);
 
