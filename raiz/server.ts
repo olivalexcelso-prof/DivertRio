@@ -11,9 +11,6 @@ const io = new Server(httpServer, {
   cors: { origin: "*" }
 });
 
-/**
- * ESTADO GLOBAL PERSISTENTE EM MEMÓRIA
- */
 let globalUsers: Record<string, User> = {};
 let globalCards: Card[] = [];
 let onlineCount = 0;
@@ -32,17 +29,12 @@ let globalEvent: BingoEvent = {
   onlineCount: 0
 };
 
-let drawInterval: ReturnType<typeof setInterval> | null = null;
+let drawInterval: NodeJS.Timeout | null = null;
 
-/**
- * LÓGICA DE SORTEIO ÚNICA E CENTRALIZADA
- */
 const processDraw = () => {
   if (globalEvent.status !== 'RUNNING' || globalEvent.drawnBalls.length >= 90) {
-    if (drawInterval) {
-      clearInterval(drawInterval);
-      drawInterval = null;
-    }
+    if (drawInterval) clearInterval(drawInterval);
+    drawInterval = null;
     return;
   }
 
@@ -54,7 +46,6 @@ const processDraw = () => {
   const nextBall = available[Math.floor(Math.random() * available.length)];
   globalEvent.drawnBalls.push(nextBall);
 
-  // Atualiza marcação em todas as cartelas globais no servidor
   globalCards.forEach(card => {
     if (card.numbers.includes(nextBall)) {
       if (!card.markedNumbers.includes(nextBall)) {
@@ -80,17 +71,14 @@ const processDraw = () => {
 
     globalEvent.winners.push(...winnerRecords);
 
-    // Evolução automática de prêmio
     if (globalEvent.currentPrizeStep === 'QUADRA') {
       globalEvent.currentPrizeStep = 'QUINA';
     } else if (globalEvent.currentPrizeStep === 'QUINA') {
       globalEvent.currentPrizeStep = 'BINGO';
     } else if (globalEvent.currentPrizeStep === 'BINGO') {
       globalEvent.status = 'FINISHED';
-      if (drawInterval) {
-        clearInterval(drawInterval);
-        drawInterval = null;
-      }
+      if (drawInterval) clearInterval(drawInterval);
+      drawInterval = null;
     }
     
     io.emit('winnersAnnounced', winnerRecords);
@@ -104,14 +92,12 @@ io.on('connection', (socket) => {
   globalEvent.onlineCount = onlineCount;
   io.emit('onlineCountUpdate', onlineCount);
 
-  // Sincronização inicial
   socket.emit('initialState', { 
     event: globalEvent, 
     cards: globalCards,
     users: Object.values(globalUsers) 
   });
 
-  // CADASTRO DE USUÁRIOS
   socket.on('registerUser', (userData: { name: string, whatsapp: string, password?: string, pixKey?: string }) => {
     const userId = userData.whatsapp;
     if (!globalUsers[userId]) {
@@ -129,16 +115,14 @@ io.on('connection', (socket) => {
     io.emit('usersUpdate', Object.values(globalUsers));
   });
 
-  socket.on('loginUser', (credentials: { whatsapp: string, password?: string }) => {
-    const user = globalUsers[credentials.whatsapp];
-    if (user && user.password === credentials.password) {
-      socket.emit('loginSuccess', user);
-    } else {
-      socket.emit('authError', 'Usuário ou senha inválidos.');
+  socket.on('addBalance', (data: { userId: string, amount: number }) => {
+    if (globalUsers[data.userId]) {
+      globalUsers[data.userId].balance += data.amount;
+      socket.emit('balanceUpdate', globalUsers[data.userId].balance);
+      io.emit('usersUpdate', Object.values(globalUsers));
     }
   });
 
-  // COMPRA DE SÉRIES
   socket.on('buySeries', (data: { userId: string, qty: number }) => {
     const user = globalUsers[data.userId];
     const cost = data.qty * globalEvent.cardPrice;
@@ -152,12 +136,12 @@ io.on('connection', (socket) => {
       socket.emit('balanceUpdate', user.balance);
       io.emit('cardsUpdate', globalCards);
       socket.emit('purchaseSuccess');
+      io.emit('usersUpdate', Object.values(globalUsers));
     }
   });
 
-  // COMANDOS ADMINISTRATIVOS
   socket.on('adminStartGame', () => {
-    if (globalEvent.status === 'SETUP' && globalCards.length > 0) {
+    if (globalCards.length > 0) {
       globalEvent.status = 'RUNNING';
       globalEvent.drawnBalls = [];
       globalEvent.winners = [];
@@ -174,19 +158,15 @@ io.on('connection', (socket) => {
     if (enabled) {
       if (!drawInterval) drawInterval = setInterval(processDraw, 4000);
     } else {
-      if (drawInterval) {
-        clearInterval(drawInterval);
-        drawInterval = null;
-      }
+      if (drawInterval) clearInterval(drawInterval);
+      drawInterval = null;
     }
     io.emit('autoStatusUpdate', !!drawInterval);
   });
 
   socket.on('adminReset', () => {
-    if (drawInterval) {
-      clearInterval(drawInterval);
-      drawInterval = null;
-    }
+    if (drawInterval) clearInterval(drawInterval);
+    drawInterval = null;
     globalEvent = { 
       ...globalEvent, 
       status: 'SETUP', 
@@ -210,3 +190,4 @@ const PORT = 3001;
 httpServer.listen(PORT, () => {
   console.log(`BINGO SERVER: Operando em http://localhost:${PORT}`);
 });
+
