@@ -20,10 +20,21 @@ class BingoServerSimulator {
   };
   private drawInterval: any = null;
 
+  constructor() {
+    // Tenta recuperar usuários do localStorage para o simulador não perder dados no refresh
+    const savedUsers = localStorage.getItem('bingo_mock_db_users');
+    if (savedUsers) this.users = JSON.parse(savedUsers);
+  }
+
+  private persist() {
+    localStorage.setItem('bingo_mock_db_users', JSON.stringify(this.users));
+  }
+
   processLocalEmit(eventName: string, data: any) {
     if (eventName === 'registerUser') this.handleRegister(data);
     if (eventName === 'loginUser') this.handleLogin(data);
     if (eventName === 'buySeries') this.handleBuy(data);
+    if (eventName === 'addBalance') this.handleAddBalance(data);
     if (eventName === 'adminStartGame') this.handleStart();
     if (eventName === 'adminDrawBall') this.handleDraw();
     if (eventName === 'adminToggleAuto') this.handleToggleAuto(data);
@@ -46,6 +57,7 @@ class BingoServerSimulator {
       createdAt: Date.now() 
     };
     this.users[user.id] = user;
+    this.persist();
     this.broadcast('registrationSuccess', user);
     this.broadcast('usersUpdate', Object.values(this.users));
   }
@@ -59,23 +71,49 @@ class BingoServerSimulator {
     }
   }
 
-  private handleBuy(data: any) {
+  private handleAddBalance(data: { userId: string, amount: number }) {
+    if (this.users[data.userId]) {
+      this.users[data.userId].balance += data.amount;
+      this.persist();
+      this.broadcast('balanceUpdate', this.users[data.userId].balance);
+    }
+  }
+
+  private handleBuy(data: { userId: string, qty: number }) {
+    // Se o usuário não existe no simulador (refresh), recria para teste
+    if (!this.users[data.userId]) {
+      this.users[data.userId] = { 
+        id: data.userId, name: 'Jogador', whatsapp: data.userId, balance: 200, createdAt: Date.now() 
+      };
+    }
+
     const user = this.users[data.userId];
     const cost = data.qty * this.event.cardPrice;
-    if (user && user.balance >= cost) {
+
+    if (user.balance >= cost) {
       user.balance -= cost;
+      this.persist();
+      
       for (let i = 0; i < data.qty; i++) {
-        const { cards } = generateFullSeriesForUser(user.id, Math.floor(Math.random() * 1000000), 'PAC1');
+        const seriesIdx = Math.floor(Math.random() * 1000000);
+        const { cards } = generateFullSeriesForUser(user.id, seriesIdx, 'PAC1');
         this.cards.push(...cards);
       }
+
       this.broadcast('balanceUpdate', user.balance);
       this.broadcast('cardsUpdate', this.cards);
       this.broadcast('purchaseSuccess', null);
+      this.broadcast('usersUpdate', Object.values(this.users));
+    } else {
+      this.broadcast('authError', 'Saldo insuficiente para esta compra.');
     }
   }
 
   private handleStart() {
-    if (this.cards.length === 0) return;
+    if (this.cards.length === 0) {
+      this.broadcast('authError', 'Não é possível iniciar sem cartelas vendidas.');
+      return;
+    }
     this.event.status = 'RUNNING';
     this.event.drawnBalls = [];
     this.event.winners = [];
@@ -120,7 +158,7 @@ class BingoServerSimulator {
 
   private handleToggleAuto(enabled: boolean) {
     if (enabled && !this.drawInterval) {
-      this.drawInterval = setInterval(() => this.handleDraw(), 4000);
+      this.drawInterval = setInterval(() => this.handleDraw(), 3500);
     } else {
       if (this.drawInterval) clearInterval(this.drawInterval);
       this.drawInterval = null;
@@ -151,7 +189,7 @@ export const socket = {
     };
     window.addEventListener('socket_msg', handler);
     if (event === 'initialState') {
-      setTimeout(() => callback(simulator.getInitialState()), 10);
+      setTimeout(() => callback(simulator.getInitialState()), 50);
     }
     return () => window.removeEventListener('socket_msg', handler);
   },
@@ -160,3 +198,4 @@ export const socket = {
   },
   off: (event: string) => {}
 };
+
