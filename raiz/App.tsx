@@ -5,7 +5,7 @@ import { announceBall, announceWinner } from './services/ttsService';
 import { AdminPanel } from './components/AdminPanel';
 import { UserDashboard } from './components/UserDashboard';
 import { FinalScoreboard } from './components/FinalScoreboard';
-import { LayoutDashboard, Settings, Trophy, ShoppingBag, ArrowRight, ShoppingCart, Lock } from 'lucide-react';
+import { LayoutDashboard, Settings, Trophy, ShoppingBag, ArrowRight, ShoppingCart, Lock, PlusCircle, Wallet } from 'lucide-react';
 import { socket } from './services/socket';
 import { PRIZE_LABELS } from './constants';
 
@@ -88,13 +88,19 @@ const App: React.FC = () => {
     socket.on('usersUpdate', (users: User[]) => setAllUsers(users));
     socket.on('cardsUpdate', (cards: Card[]) => setAllCards(cards));
     socket.on('onlineCountUpdate', (count: number) => setEvent(prev => ({ ...prev, onlineCount: count })));
-    socket.on('gameStarted', (evt: BingoEvent) => setEvent(evt));
+    socket.on('gameStarted', (evt: BingoEvent) => {
+      setEvent(evt);
+      setAnnouncement("A PARTIDA COMEÇOU!");
+      setTimeout(() => setAnnouncement(''), 2000);
+    });
     socket.on('autoStatusUpdate', (status: boolean) => setIsAdminAutoDrawing(status));
     
     socket.on('gameReset', (evt: BingoEvent) => {
       setEvent(evt);
       setAllCards([]);
       setShowFinalScoreboard(false);
+      setAnnouncement("Partida reiniciada.");
+      setTimeout(() => setAnnouncement(''), 1500);
     });
 
     socket.on('registrationSuccess', (u: User) => {
@@ -111,7 +117,7 @@ const App: React.FC = () => {
       setUser(prev => prev ? ({ ...prev, balance }) : null);
     });
 
-    socket.on('purchaseSuccess', () => setAnnouncement("Séries adquiridas!"));
+    socket.on('purchaseSuccess', () => setAnnouncement("Cartelas creditadas com sucesso!"));
     socket.on('authError', (err: string) => alert(err));
   }, [event.currentPrizeStep]);
 
@@ -127,6 +133,14 @@ const App: React.FC = () => {
   const handlePurchase = () => {
     if (user && event.status === 'SETUP') {
       socket.emit('buySeries', { userId: user.id, qty: purchaseQty });
+    }
+  };
+
+  const handleAddCredits = () => {
+    if (user) {
+      socket.emit('addBalance', { userId: user.id, amount: 100 });
+      setAnnouncement("Depósito de R$ 100,00 realizado!");
+      setTimeout(() => setAnnouncement(''), 1500);
     }
   };
 
@@ -176,7 +190,10 @@ const App: React.FC = () => {
           <Trophy className="text-indigo-600" size={24} />
           <div>
             <h1 className="text-xl font-black">{visual.appName}</h1>
-            <p className="text-[10px] font-black text-slate-400 uppercase leading-none">{event.onlineCount || 1} online</p>
+            <div className="flex items-center gap-1.5">
+               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+               <p className="text-[10px] font-black text-slate-400 uppercase leading-none">{event.onlineCount || 1} conectados</p>
+            </div>
           </div>
         </div>
         <div className="text-right">
@@ -204,8 +221,8 @@ const App: React.FC = () => {
               onUpdateEvent={() => {}}
             />
           ) : (
-            <div className="max-w-md mx-auto bg-white p-8 rounded-[2rem] shadow-xl border mt-10">
-              <div className="text-center mb-6">
+            <div className="max-w-md mx-auto bg-white p-8 rounded-[2rem] shadow-xl border mt-10 text-center">
+              <div className="mb-6">
                  <Lock size={40} className="mx-auto text-slate-300 mb-2" />
                  <h2 className="text-2xl font-black">Acesso Admin</h2>
               </div>
@@ -217,38 +234,49 @@ const App: React.FC = () => {
         )}
 
         {activeTab === 'STORE' && (
-          <div className="max-w-md mx-auto bg-white p-8 rounded-[2.5rem] shadow-xl text-center border mt-10">
-            <ShoppingBag size={48} className="mx-auto text-indigo-600 mb-4" />
-            <h2 className="text-2xl font-black mb-8">Loja de Séries</h2>
-            <div className="flex items-center justify-between bg-slate-50 p-6 rounded-2xl mb-8 border">
-              <button onClick={() => setPurchaseQty(Math.max(1, purchaseQty - 1))} className="w-12 h-12 bg-white rounded-xl shadow font-black">-</button>
-              <div className="flex flex-col">
-                <span className="text-4xl font-black">{purchaseQty}</span>
-                <span className="text-[10px] font-black text-slate-400 uppercase">Séries</span>
+          <div className="max-w-md mx-auto space-y-6 mt-10">
+            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl text-center border">
+              <ShoppingBag size={48} className="mx-auto text-indigo-600 mb-4" />
+              <h2 className="text-2xl font-black mb-6">Comprar Séries</h2>
+              <div className="flex items-center justify-between bg-slate-50 p-6 rounded-2xl mb-6 border">
+                <button onClick={() => setPurchaseQty(Math.max(1, purchaseQty - 1))} className="w-12 h-12 bg-white rounded-xl shadow font-black">-</button>
+                <div className="flex flex-col">
+                  <span className="text-4xl font-black">{purchaseQty}</span>
+                  <span className="text-[10px] font-black text-slate-400 uppercase">Séries</span>
+                </div>
+                <button onClick={() => setPurchaseQty(purchaseQty + 1)} className="w-12 h-12 bg-white rounded-xl shadow font-black">+</button>
               </div>
-              <button onClick={() => setPurchaseQty(purchaseQty + 1)} className="w-12 h-12 bg-white rounded-xl shadow font-black">+</button>
+              <button onClick={handlePurchase} disabled={event.status !== 'SETUP'} className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl shadow-xl disabled:opacity-50 transition-all active:scale-95">
+                 Pagar R$ {(purchaseQty * event.cardPrice).toFixed(2)}
+              </button>
             </div>
-            <button onClick={handlePurchase} disabled={event.status !== 'SETUP'} className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl shadow-xl disabled:opacity-50">
-               Pagar R$ {(purchaseQty * event.cardPrice).toFixed(2)}
-            </button>
+
+            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl text-center border">
+              <Wallet size={32} className="mx-auto text-emerald-600 mb-4" />
+              <h2 className="text-xl font-black mb-4">Adicionar Créditos</h2>
+              <p className="text-xs text-slate-400 mb-6 font-bold uppercase tracking-wider">Recarregue seu saldo para continuar jogando</p>
+              <button onClick={handleAddCredits} className="w-full py-4 bg-emerald-600 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2">
+                <PlusCircle size={20} /> Adicionar R$ 100,00
+              </button>
+            </div>
           </div>
         )}
       </main>
 
       <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/90 backdrop-blur-xl h-20 rounded-[2.5rem] shadow-2xl flex items-center justify-around px-4 z-40 border border-slate-200/50">
-        <button onClick={() => setActiveTab('USER')} className={`flex flex-col items-center ${activeTab === 'USER' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('USER')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'USER' ? 'text-indigo-600 scale-110' : 'text-slate-400'}`}>
           <LayoutDashboard size={24} />
           <span className="text-[9px] font-black uppercase">Meu Jogo</span>
         </button>
-        <button onClick={() => setActiveTab('STORE')} className={`flex flex-col items-center ${activeTab === 'STORE' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('STORE')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'STORE' ? 'text-indigo-600 scale-110' : 'text-slate-400'}`}>
           <ShoppingCart size={24} />
           <span className="text-[9px] font-black uppercase">Loja</span>
         </button>
-        <button onClick={() => setActiveTab('ADMIN')} className={`flex flex-col items-center ${activeTab === 'ADMIN' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('ADMIN')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'ADMIN' ? 'text-indigo-600 scale-110' : 'text-slate-400'}`}>
           <Settings size={24} />
           <span className="text-[9px] font-black uppercase">Painel</span>
         </button>
-        <button onClick={handleLogout} className="flex flex-col items-center text-slate-400">
+        <button onClick={handleLogout} className="flex flex-col items-center gap-1 text-slate-400">
           <ArrowRight size={24} />
           <span className="text-[9px] font-black uppercase">Sair</span>
         </button>
@@ -262,3 +290,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+
