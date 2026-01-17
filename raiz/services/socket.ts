@@ -4,8 +4,6 @@ import { generateFullSeriesForUser, checkWinners } from './bingoService';
 
 /**
  * MOCK SERVER LOGIC (Simulação do Backend Node.js)
- * Esta lógica reside aqui apenas para o preview funcionar.
- * Na arquitetura real solicitada, este código estaria no server.ts.
  */
 class BingoServerSimulator {
   private users: Record<string, User> = {};
@@ -32,9 +30,6 @@ class BingoServerSimulator {
   }
 
   emit(event: string, ...args: any[]) {
-    const callbacks = this.listeners[event] || [];
-    callbacks.forEach(cb => cb(...args));
-    
     // Simulação de processamento de rede
     if (event === 'registerUser') this.handleRegister(args[0]);
     if (event === 'loginUser') this.handleLogin(args[0]);
@@ -46,7 +41,6 @@ class BingoServerSimulator {
   }
 
   private broadcast(event: string, data: any) {
-    // Simula o io.emit()
     window.dispatchEvent(new CustomEvent('socket_msg', { detail: { event, data } }));
   }
 
@@ -68,8 +62,9 @@ class BingoServerSimulator {
 
   private handleBuy(data: any) {
     const user = this.users[data.userId];
-    if (user && user.balance >= data.qty * this.event.cardPrice) {
-      user.balance -= data.qty * this.event.cardPrice;
+    const cost = data.qty * this.event.cardPrice;
+    if (user && user.balance >= cost) {
+      user.balance -= cost;
       for (let i = 0; i < data.qty; i++) {
         const { cards } = generateFullSeriesForUser(user.id, Math.floor(Math.random()*100000), 'PAC1');
         this.cards.push(...cards);
@@ -93,7 +88,9 @@ class BingoServerSimulator {
     this.event.drawnBalls.push(ball);
     
     this.cards.forEach(c => {
-      if (c.numbers.includes(ball)) c.markedNumbers.push(ball);
+      if (c.numbers.includes(ball)) {
+        if (!c.markedNumbers.includes(ball)) c.markedNumbers.push(ball);
+      }
     });
 
     const winners = checkWinners(this.cards, this.event.drawnBalls, this.event.currentPrizeStep);
@@ -108,7 +105,6 @@ class BingoServerSimulator {
       this.event.winners.push(...records);
       this.broadcast('winnersAnnounced', records);
       
-      // Evolução de prêmio
       if (this.event.currentPrizeStep === 'QUADRA') this.event.currentPrizeStep = 'QUINA';
       else if (this.event.currentPrizeStep === 'QUINA') this.event.currentPrizeStep = 'BINGO';
       else {
@@ -145,24 +141,23 @@ class BingoServerSimulator {
 
 const simulator = new BingoServerSimulator();
 
-/**
- * CLIENT INTERFACE (O que o App consome)
- */
 export const socket = {
   on: (event: string, callback: Function) => {
-    window.addEventListener('socket_msg', (e: any) => {
+    const handler = (e: any) => {
       if (e.detail.event === event) callback(e.detail.data);
-    });
-    // Força o envio do estado inicial na conexão
+    };
+    window.addEventListener('socket_msg', handler);
+    
     if (event === 'initialState') {
-      setTimeout(() => callback(simulator.getInitialState()), 100);
+      setTimeout(() => callback(simulator.getInitialState()), 0);
     }
+    return () => window.removeEventListener('socket_msg', handler);
   },
   emit: (event: string, data?: any) => {
     simulator.emit(event, data);
   },
   off: (event: string) => {
-    // Mock simplificado
+    // Implementação mock simplificada
   }
 };
 
