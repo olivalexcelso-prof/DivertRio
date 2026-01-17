@@ -1,19 +1,13 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { User, Card, BingoEvent, VisualConfig } from './types';
-import { generateFullSeriesForUser, formatPackageId, checkWinners } from './services/bingoService';
+import React, { useState, useEffect, useCallback } from 'react';
+import { User, Card, BingoEvent, VisualConfig, WinnerRecord } from './types';
 import { announceBall, announceWinner, announcePrizes } from './services/ttsService';
 import { AdminPanel } from './components/AdminPanel';
 import { UserDashboard } from './components/UserDashboard';
 import { FinalScoreboard } from './components/FinalScoreboard';
 import { LayoutDashboard, Settings, Trophy, ShoppingBag, Minus, Plus, Wallet, ArrowRight, PlusCircle, Lock, User as UserIcon } from 'lucide-react';
-import { db } from './services/firebaseService';
+import { socket } from './services/socket';
 import { PRIZE_LABELS } from './constants';
-
-const EVENT_ID = 'main-event';
-const VISUAL_ID = 'config-visual';
-const PACKAGE_ID = formatPackageId(1);
-const MIN_DEPOSIT = 30;
 
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = '132435OLI';
@@ -27,20 +21,6 @@ const DEFAULT_VISUAL: VisualConfig = {
   updatedAt: Date.now()
 };
 
-const INITIAL_EVENT: BingoEvent = {
-  id: EVENT_ID,
-  name: 'Grande Bingo Beneficente',
-  cardPrice: 10,
-  maxCards: 1000,
-  drawnBalls: [],
-  status: 'SETUP',
-  currentPrizeStep: 'QUADRA',
-  winners: [],
-  startMode: 'MANUAL',
-  autoInterval: 5,
-  onlineCount: 0
-};
-
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('bingo_user_session');
@@ -49,481 +29,204 @@ const App: React.FC = () => {
   
   const [visual, setVisual] = useState<VisualConfig>(DEFAULT_VISUAL);
   const [activeTab, setActiveTab] = useState<'USER' | 'ADMIN' | 'STORE'>('USER');
-  const [event, setEvent] = useState<BingoEvent>(INITIAL_EVENT);
+  const [event, setEvent] = useState<BingoEvent | null>(null);
   const [allCards, setAllCards] = useState<Card[]>([]);
   const [announcement, setAnnouncement] = useState<string>('');
   const [showFinalScoreboard, setShowFinalScoreboard] = useState(false);
-  
-  // Controle de Sorteio Automático (Centralizado no Admin)
   const [isAdminAutoDrawing, setIsAdminAutoDrawing] = useState(false);
   
-  // Estados de Autenticação do Usuário
+  // Autenticação
   const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
   const [loginWhatsapp, setLoginWhatsapp] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [registerName, setRegisterName] = useState('');
   const [registerPix, setRegisterPix] = useState('');
-  
-  // Estado de Autenticação Admin (Acesso Interno)
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminUserField, setAdminUserField] = useState('');
   const [adminPassField, setAdminPassField] = useState('');
-
   const [purchaseQty, setPurchaseQty] = useState(1);
-  const [depositAmount, setDepositAmount] = useState(30);
 
-  // Sincronização de Dados com "Backend" (WebSocket Mock)
+  // SINCRONIZAÇÃO VIA WEBSOCKET
   useEffect(() => {
-    const unsubVisual = db.onSnapshot('config_visual', VISUAL_ID, (data) => {
-      if (data) {
-        setVisual(data);
-        document.documentElement.style.setProperty('--primary-color', data.primaryColor);
-        document.documentElement.style.setProperty('--card-color', data.cardColor);
-      } else {
-        db.set('config_visual', VISUAL_ID, DEFAULT_VISUAL);
+    socket.on('initialState', (data: { event: BingoEvent, cards: Card[] }) => {
+      setEvent(data.event);
+      setAllCards(data.cards);
+    });
+
+    socket.on('ballDrawn', (data: { ball: number, event: BingoEvent }) => {
+      announceBall(data.ball);
+      setEvent(data.event);
+    });
+
+    socket.on('winnersAnnounced', (winners: WinnerRecord[]) => {
+      if (winners.length > 0 && event) {
+        announceWinner(event.currentPrizeStep, winners[0].userName);
+        setAnnouncement(`VITÓRIA! ${winners[0].userName} conquistou ${PRIZE_LABELS[event.currentPrizeStep]}!`);
+        setTimeout(() => setAnnouncement(''), 3000);
       }
     });
 
-    const unsubEvent = db.onSnapshot('estado_bingo', EVENT_ID, (data) => {
-      if (data) setEvent(data);
+    socket.on('cardsUpdate', (cards: Card[]) => setAllCards(cards));
+    socket.on('onlineCountUpdate', (count: number) => setEvent(prev => prev ? ({ ...prev, onlineCount: count }) : null));
+    socket.on('gameStarted', (evt: BingoEvent) => setEvent(evt));
+    socket.on('autoStatusUpdate', (status: boolean) => setIsAdminAutoDrawing(status));
+    socket.on('gameReset', (evt: BingoEvent) => {
+      setEvent(evt);
+      setAllCards([]);
+      setShowFinalScoreboard(false);
     });
 
-    const unsubCards = db.onSnapshotCollection('cartelas', (cards) => {
-      setAllCards(cards as Card[]);
+    socket.on('registrationSuccess', (u: User) => {
+      setUser(u);
+      localStorage.setItem('bingo_user_session', JSON.stringify(u));
     });
 
-    if (user) {
-      const unsubUser = db.onSnapshot('users', user.id, (data) => {
-        if (data) {
-          setUser(data);
-          localStorage.setItem('bingo_user_session', JSON.stringify(data));
-        }
-      });
-      return () => { unsubVisual(); unsubEvent(); unsubCards(); unsubUser(); };
-    }
-    return () => { unsubVisual(); unsubEvent(); unsubCards(); };
-  }, [user?.id]);
+    socket.on('loginSuccess', (u: User) => {
+      setUser(u);
+      localStorage.setItem('bingo_user_session', JSON.stringify(u));
+    });
 
-  // Sistema de Presença Centralizado (Heartbeat para simular WebSocket Connection Count)
-  useEffect(() => {
-    if (!user) return;
+    socket.on('balanceUpdate', (balance: number) => {
+      setUser(prev => prev ? ({ ...prev, balance }) : null);
+    });
 
-    const updatePresence = async () => {
-      await db.set('presence', user.id, { lastSeen: Date.now() });
+    socket.on('purchaseSuccess', () => {
+      setAnnouncement("Sucesso! Séries adquiridas.");
+      setTimeout(() => setAnnouncement(''), 2000);
+    });
+
+    socket.on('authError', (err: string) => alert(err));
+
+    return () => {
+      socket.off('initialState');
+      socket.off('ballDrawn');
+      socket.off('winnersAnnounced');
+      socket.off('cardsUpdate');
+      socket.off('onlineCountUpdate');
+      socket.off('gameStarted');
+      socket.off('autoStatusUpdate');
+      socket.off('gameReset');
     };
+  }, [event]);
 
-    updatePresence();
-    const interval = setInterval(updatePresence, 10000); // 10s heartbeat
-
-    return () => clearInterval(interval);
-  }, [user?.id]);
-
-  // Agregador de Contagem Online (Processado pelo Admin ou sistema centralizado)
-  useEffect(() => {
-    if (!isAdminAuthenticated) return;
-
-    const aggregatePresence = async () => {
-      const allPresence = await db.getAll('presence') as any[];
-      const now = Date.now();
-      const activeUsersCount = allPresence.filter(p => (now - p.lastSeen) < 30000).length; // Considera ativo se visto nos últimos 30s
-      
-      if (event.onlineCount !== activeUsersCount) {
-        await db.set('estado_bingo', EVENT_ID, { ...event, onlineCount: activeUsersCount });
-      }
-    };
-
-    const interval = setInterval(aggregatePresence, 15000); // Atualiza globalmente a cada 15s
-    return () => clearInterval(interval);
-  }, [isAdminAuthenticated, event]);
-
-  // Lógica de Início Automático (Apenas no contexto Admin se estiver ativo)
-  useEffect(() => {
-    if (isAdminAuthenticated && event.status === 'SETUP' && event.startMode === 'AUTO' && event.nextAutoStart) {
-      const timer = setInterval(() => {
-        if (Date.now() >= event.nextAutoStart! && allCards.length > 0) {
-          handleStartGame();
-          clearInterval(timer);
-        }
-      }, 1000);
-      return () => clearInterval(timer);
-    }
-  }, [isAdminAuthenticated, event.status, event.startMode, event.nextAutoStart, allCards.length]);
-
-  const handleUserAuth = async (e: React.FormEvent) => {
+  const handleAuth = (e: React.FormEvent) => {
     e.preventDefault();
-    const allUsers = await db.getAll('users') as User[];
-    
     if (authMode === 'REGISTER') {
-      const exists = allUsers.find(u => u.whatsapp === loginWhatsapp);
-      if (exists) {
-        setAnnouncement("Este WhatsApp já está cadastrado.");
-        return;
-      }
-      const newUser: User = { 
-        id: crypto.randomUUID(), 
-        name: registerName, 
-        whatsapp: loginWhatsapp, 
-        password: loginPassword,
-        pixKey: registerPix, 
-        balance: 0, 
-        createdAt: Date.now() 
-      };
-      await db.set('users', newUser.id, newUser);
-      setUser(newUser);
+      socket.emit('registerUser', { name: registerName, whatsapp: loginWhatsapp, password: loginPassword, pixKey: registerPix });
     } else {
-      const found = allUsers.find(u => u.whatsapp === loginWhatsapp && u.password === loginPassword);
-      if (found) {
-        setUser(found);
-      } else {
-        setAnnouncement("WhatsApp ou Senha incorretos.");
-        setTimeout(() => setAnnouncement(''), 3000);
-      }
+      socket.emit('loginUser', { whatsapp: loginWhatsapp, password: loginPassword });
     }
   };
 
-  const handleAdminAuth = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (adminUserField === ADMIN_USER && adminPassField === ADMIN_PASS) {
-      setIsAdminAuthenticated(true);
-      setAdminUserField('');
-      setAdminPassField('');
-    } else {
-      setAnnouncement("Credenciais administrativas inválidas.");
-      setTimeout(() => setAnnouncement(''), 3000);
+  const handlePurchase = () => {
+    if (user && event?.status === 'SETUP') {
+      socket.emit('buySeries', { userId: user.id, qty: purchaseQty });
     }
   };
 
-  const handleLogout = () => {
-    setUser(null);
-    localStorage.removeItem('bingo_user_session');
-    setIsAdminAuthenticated(false);
-    setActiveTab('USER');
-  };
+  if (!event) return <div className="min-h-screen flex items-center justify-center font-black">Conectando ao servidor...</div>;
 
-  const handleDepositPix = async () => {
-    if (!user) return;
-    setAnnouncement(`Confirmando depósito de R$ ${depositAmount}...`);
-    setTimeout(async () => {
-      await db.set('users', user.id, { ...user, balance: user.balance + depositAmount });
-      setAnnouncement(`Depósito confirmado!`);
-      setTimeout(() => setAnnouncement(''), 1500);
-    }, 1500);
-  };
-
-  const handleBuySeries = async () => {
-    if (!user || event.status !== 'SETUP') return;
-    const totalCost = purchaseQty * event.cardPrice;
-    if (user.balance < totalCost) {
-      setAnnouncement("Saldo insuficiente.");
-      return;
-    }
-    
-    setAnnouncement("Processando compra...");
-    
-    setTimeout(async () => {
-      try {
-        const allSeries = await db.getAll('series');
-        let currentSeriesIdx = allSeries.length;
-        const batch = db.batch();
-        
-        batch.update('users', user.id, { balance: user.balance - totalCost });
-        
-        for (let i = 0; i < purchaseQty; i++) {
-          currentSeriesIdx++;
-          const { series, cards } = generateFullSeriesForUser(user.id, currentSeriesIdx, PACKAGE_ID);
-          batch.set('series', series.id, series);
-          cards.forEach(card => batch.set('cartelas', card.id, card));
-        }
-        
-        await batch.commit();
-        setAnnouncement(`Sucesso! ${purchaseQty} séries adquiridas.`);
-        setPurchaseQty(1);
-        setTimeout(() => {
-          setAnnouncement('');
-          setActiveTab('USER');
-        }, 1500);
-      } catch (e) {
-        setAnnouncement("Erro ao processar compra.");
-        setTimeout(() => setAnnouncement(''), 3000);
-      }
-    }, 100);
-  };
-
-  const handleResetEvent = useCallback(async () => {
-    setIsAdminAutoDrawing(false);
-    setShowFinalScoreboard(false);
-    const nextStart = event.startMode === 'AUTO' ? Date.now() + (event.autoInterval * 60 * 1000) : undefined;
-    await db.clearCollection('cartelas');
-    await db.clearCollection('series');
-    await db.set('estado_bingo', EVENT_ID, { 
-      ...INITIAL_EVENT, 
-      startMode: event.startMode, 
-      autoInterval: event.autoInterval, 
-      cardPrice: event.cardPrice,
-      nextAutoStart: nextStart,
-      onlineCount: event.onlineCount
-    });
-  }, [event.startMode, event.autoInterval, event.cardPrice, event.onlineCount]);
-
-  const handleStartGame = useCallback(async () => {
-    if (allCards.length === 0) return;
-    const totalSeries = Math.floor(allCards.length / 6);
-    announcePrizes(totalSeries * event.cardPrice);
-    await db.set('estado_bingo', EVENT_ID, { ...event, status: 'RUNNING', nextAutoStart: undefined });
-  }, [allCards.length, event]);
-
-  const handleDrawBall = useCallback(async () => {
-    // Apenas quem está no painel admin (operador) pode disparar o sorteio centralizado
-    if (!isAdminAuthenticated || event.status !== 'RUNNING') return;
-    
-    const available = Array.from({ length: 90 }, (_, i) => i + 1).filter(n => !event.drawnBalls.includes(n));
-    if (available.length === 0) return;
-    
-    const nextBall = available[Math.floor(Math.random() * available.length)];
-    const newDrawn = [...event.drawnBalls, nextBall];
-    
-    // Anúncio e processamento centralizado (Fonte única da verdade)
-    announceBall(nextBall);
-    const winners = checkWinners(allCards, newDrawn, event.currentPrizeStep);
-    const batch = db.batch();
-    
-    // Atualiza marcação nas cartelas globais para todos os usuários em tempo real
-    allCards.forEach(c => {
-      if (c.numbers.includes(nextBall)) {
-        batch.update('cartelas', c.id, { markedNumbers: [...c.markedNumbers, nextBall] });
-      }
-    });
-
-    const eventUpdates: any = { ...event, drawnBalls: newDrawn };
-    
-    if (winners.length > 0) {
-      const win = winners[0];
-      const winningCard = allCards.find(c => c.id === win.cardId);
-      const winnerUser = await db.get('users', winningCard?.userId || '');
-      const winnerName = winnerUser?.name || 'Ganhador';
-      
-      announceWinner(win.prize, winnerName);
-      eventUpdates.winners = [...(event.winners || []), { ...win, userName: winnerName, timestamp: Date.now(), ballCount: newDrawn.length }];
-      
-      if (win.prize === 'QUADRA') {
-        eventUpdates.currentPrizeStep = 'QUINA';
-      } else if (win.prize === 'QUINA') {
-        eventUpdates.currentPrizeStep = 'BINGO';
-      } else { 
-        eventUpdates.status = 'FINISHED'; 
-        setIsAdminAutoDrawing(false);
-      }
-      
-      setAnnouncement(`VITÓRIA! ${winnerName} conquistou ${PRIZE_LABELS[win.prize]}!`);
-      setTimeout(() => setAnnouncement(''), 3000);
-    }
-    
-    batch.set('estado_bingo', EVENT_ID, eventUpdates);
-    await batch.commit();
-  }, [isAdminAuthenticated, event, allCards]);
-
-  // Loop de sorteio automático controlado exclusivamente pelo Admin Autenticado
-  useEffect(() => {
-    let interval: any;
-    if (isAdminAuthenticated && isAdminAutoDrawing && !announcement && event.status === 'RUNNING') {
-      interval = setInterval(handleDrawBall, 4000);
-    }
-    return () => clearInterval(interval);
-  }, [isAdminAuthenticated, isAdminAutoDrawing, announcement, event.status, handleDrawBall]);
-
-  // Interface de Autenticação de Usuário (Barreira de Entrada)
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-[#0f172a]">
-        <div className="bg-white rounded-[2rem] p-8 max-w-sm w-full shadow-2xl">
+      <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-6">
+        <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl w-full max-w-sm">
           <div className="text-center mb-8">
-            <Trophy size={48} className="mx-auto mb-4" style={{ color: visual.primaryColor }} />
+            <Trophy size={48} className="mx-auto mb-4 text-indigo-600" />
             <h1 className="text-3xl font-black text-slate-900">{visual.appName}</h1>
-            <p className="text-slate-400 font-bold text-xs uppercase mt-2 tracking-widest">
-              {authMode === 'LOGIN' ? 'Acesse sua conta' : 'Crie seu cadastro'}
-            </p>
+            <p className="text-slate-400 font-bold text-xs uppercase mt-2 tracking-widest">{authMode === 'LOGIN' ? 'Login' : 'Cadastro'}</p>
           </div>
-          
-          <form onSubmit={handleUserAuth} className="space-y-4">
+          <form onSubmit={handleAuth} className="space-y-4">
             {authMode === 'REGISTER' && (
-              <div className="relative">
-                <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                <input type="text" required value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="Nome Completo" />
-              </div>
+              <input type="text" placeholder="Nome" value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl outline-none" required />
             )}
-            
-            <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 font-bold text-sm">WA</span>
-              <input type="tel" required value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="WhatsApp (DDD + Número)" />
-            </div>
-
-            <div className="relative">
-              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-              <input type="password" required value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="Sua Senha" />
-            </div>
-
-            {authMode === 'REGISTER' && (
-              <div className="relative">
-                <Wallet className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                <input type="text" required value={registerPix} onChange={e => setRegisterPix(e.target.value)} className="w-full bg-slate-50 border-2 rounded-2xl pl-12 pr-5 py-4 outline-none focus:ring-2 ring-indigo-500/20" placeholder="Chave PIX (Para prêmios)" />
-              </div>
-            )}
-
-            <button type="submit" className="w-full py-4 rounded-2xl font-black text-white shadow-xl transition-transform active:scale-95" style={{ backgroundColor: visual.primaryColor }}>
-              {authMode === 'LOGIN' ? 'Entrar Agora' : 'Finalizar Cadastro'}
-            </button>
+            <input type="tel" placeholder="WhatsApp" value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl outline-none" required />
+            <input type="password" placeholder="Senha" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl outline-none" required />
+            <button type="submit" className="w-full py-4 bg-indigo-600 text-white font-black rounded-2xl shadow-xl">{authMode === 'LOGIN' ? 'Entrar' : 'Cadastrar'}</button>
+            <button type="button" onClick={() => setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN')} className="w-full text-indigo-600 font-bold text-sm">Alternar para {authMode === 'LOGIN' ? 'Cadastro' : 'Login'}</button>
           </form>
-
-          <div className="mt-6 text-center">
-             <button onClick={() => setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN')} className="text-xs font-black text-indigo-600 uppercase tracking-widest hover:underline">
-                {authMode === 'LOGIN' ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Faça Login'}
-             </button>
-          </div>
         </div>
       </div>
     );
   }
 
+  const userCards = allCards.filter(c => c.userId === user.id);
+
   return (
-    <div className="min-h-screen pb-32" style={{ backgroundColor: visual.backgroundColor }}>
-      {/* Sistema de Alertas Centralizado */}
+    <div className="min-h-screen bg-slate-50 pb-24" style={{ backgroundColor: visual.backgroundColor }}>
       {announcement && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full text-center shadow-2xl">
-            <h2 className="text-xl font-black text-slate-900 mb-6">{announcement}</h2>
-            {(announcement.includes('Sucesso') || announcement.includes('insuficiente') || announcement.includes('inválidas')) && (
-              <button onClick={() => setAnnouncement('')} className="w-full py-4 text-white rounded-2xl font-bold" style={{ backgroundColor: visual.primaryColor }}>Fechar</button>
-            )}
-          </div>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-white p-8 rounded-[2rem] text-center font-black">{announcement}</div>
         </div>
       )}
 
-      <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-lg border-b border-slate-100 px-6 py-4">
-        <div className="max-w-6xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-3">
-             <Trophy style={{ color: visual.primaryColor }} size={24} />
-             <div className="flex flex-col">
-               <span className="text-xl font-black text-slate-900 leading-none">{visual.appName}</span>
-               <div className="flex items-center gap-1.5 mt-0.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-tight">
-                    {event.onlineCount || 0} jogadores conectados
-                  </span>
-               </div>
-             </div>
+      <header className="bg-white border-b p-4 flex justify-between items-center sticky top-0 z-40">
+        <div className="flex items-center gap-2">
+          <Trophy className="text-indigo-600" size={24} />
+          <div>
+            <h1 className="text-xl font-black">{visual.appName}</h1>
+            <p className="text-[10px] font-black text-emerald-500 uppercase">{event.onlineCount} jogadores online</p>
           </div>
-          <div className="flex items-center gap-4">
-             <div className="text-right">
-                <p className="text-[10px] font-black text-slate-400 uppercase leading-none">Saldo</p>
-                <p className="text-lg font-black text-slate-900">R$ {user.balance.toFixed(2)}</p>
-             </div>
-             <button onClick={() => setActiveTab('STORE')} className="p-2 bg-slate-50 text-slate-600 rounded-xl transition-colors hover:bg-slate-100"><PlusCircle size={20} /></button>
-          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-[9px] font-black text-slate-400 uppercase">Saldo</p>
+          <p className="font-black text-indigo-600">R$ {user.balance.toFixed(2)}</p>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-8">
-        {activeTab === 'USER' ? (
-          <UserDashboard user={user} cards={allCards.filter(c => c.userId === user.id)} event={event} totalGlobalCards={allCards.length} />
-        ) : activeTab === 'STORE' ? (
-          <div className="space-y-6 max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
-                <h3 className="text-lg font-black mb-8 flex items-center gap-2 text-slate-800"><Wallet size={20} style={{ color: visual.primaryColor }} /> Adicionar Saldo</h3>
-                <div className="bg-slate-50 p-6 rounded-2xl mb-6 flex items-center justify-between">
-                  <button onClick={() => setDepositAmount(Math.max(MIN_DEPOSIT, depositAmount - 10))} className="w-12 h-12 bg-white rounded-xl shadow-sm border flex items-center justify-center hover:bg-slate-50 transition-colors"><Minus size={20} /></button>
-                  <span className="text-3xl font-black text-slate-900">R$ {depositAmount}</span>
-                  <button onClick={() => setDepositAmount(depositAmount + 10)} className="w-12 h-12 bg-white rounded-xl shadow-sm border flex items-center justify-center hover:bg-slate-50 transition-colors"><Plus size={20} /></button>
-                </div>
-                <button onClick={handleDepositPix} className="w-full text-white py-5 rounded-2xl font-black shadow-xl hover:opacity-90 active:scale-95 transition-all" style={{ backgroundColor: visual.primaryColor }}>Pagar via PIX</button>
-              </div>
-
-              <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
-                <h3 className="text-lg font-black mb-8 flex items-center gap-2 text-slate-800"><ShoppingBag size={20} style={{ color: visual.primaryColor }} /> Comprar Séries</h3>
-                <div className="bg-slate-50 p-6 rounded-2xl mb-6 flex items-center justify-between">
-                  <button onClick={() => setPurchaseQty(Math.max(1, purchaseQty - 1))} className="w-12 h-12 bg-white rounded-xl shadow-sm border flex items-center justify-center hover:bg-slate-50 transition-colors"><Minus size={20} /></button>
-                  <span className="text-3xl font-black text-slate-900">{purchaseQty}</span>
-                  <button onClick={() => setPurchaseQty(purchaseQty + 1)} className="w-12 h-12 bg-white rounded-xl shadow-sm border flex items-center justify-center hover:bg-slate-50 transition-colors"><Plus size={20} /></button>
-                </div>
-                <button onClick={handleBuySeries} disabled={event.status !== 'SETUP'} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black shadow-xl disabled:opacity-50 hover:bg-slate-800 transition-all active:scale-95">
-                  Confirmar R$ {(purchaseQty * event.cardPrice).toFixed(2)}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
+      <main className="p-6 max-w-7xl mx-auto">
+        {activeTab === 'USER' && <UserDashboard user={user} cards={userCards} event={event} totalGlobalCards={allCards.length} />}
+        
+        {activeTab === 'ADMIN' && (
           isAdminAuthenticated ? (
-            <div className="animate-in fade-in duration-500">
-              <AdminPanel 
-                event={event} 
-                users={[user]} 
-                cards={allCards} 
-                onDrawBall={handleDrawBall} 
-                onResetEvent={handleResetEvent} 
-                onUpdatePrizeStep={(s) => db.set('estado_bingo', EVENT_ID, { ...event, currentPrizeStep: s })} 
-                isAutoDrawing={isAdminAutoDrawing} 
-                onToggleAutoDraw={() => setIsAdminAutoDrawing(!isAdminAutoDrawing)} 
-                onAddSeries={() => {}} 
-                onStartGame={handleStartGame} 
-                visualConfig={visual} 
-                onUpdateVisual={(v) => db.set('config_visual', VISUAL_ID, v)}
-                onUpdateEvent={(e) => db.set('estado_bingo', EVENT_ID, e)}
-              />
-            </div>
+            <AdminPanel 
+              event={event} users={[]} cards={allCards}
+              onDrawBall={() => socket.emit('adminDrawBall')}
+              onResetEvent={() => socket.emit('adminReset')}
+              onUpdatePrizeStep={(s) => socket.emit('adminUpdatePrize', s)}
+              isAutoDrawing={isAdminAutoDrawing}
+              onToggleAutoDraw={() => socket.emit('adminToggleAuto', !isAdminAutoDrawing)}
+              onAddSeries={() => {}}
+              onStartGame={() => socket.emit('adminStartGame')}
+              visualConfig={visual}
+              onUpdateVisual={setVisual}
+              onUpdateEvent={() => {}}
+            />
           ) : (
-            <div className="max-w-md mx-auto bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-100 text-center animate-in zoom-in duration-300">
-               <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-6">
-                 <Lock size={32} />
-               </div>
-               <h2 className="text-2xl font-black text-slate-900 mb-2">Acesso Restrito</h2>
-               <p className="text-slate-400 font-medium text-sm mb-8 leading-relaxed">
-                 O Painel Administrativo é protegido por autenticação interna de operador.
-               </p>
-               
-               <form onSubmit={handleAdminAuth} className="space-y-4">
-                  <input 
-                    type="text" 
-                    value={adminUserField} 
-                    onChange={e => setAdminUserField(e.target.value)} 
-                    placeholder="Identificação Operador"
-                    className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none focus:ring-2 ring-indigo-500/20 font-bold"
-                  />
-                  <input 
-                    type="password" 
-                    value={adminPassField} 
-                    onChange={e => setAdminPassField(e.target.value)} 
-                    placeholder="Senha de Acesso"
-                    className="w-full bg-slate-50 border-2 rounded-2xl px-5 py-4 outline-none focus:ring-2 ring-indigo-500/20 font-bold"
-                  />
-                  <button type="submit" className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black shadow-xl transition-all active:scale-95 hover:bg-slate-800">
-                    Autenticar Painel
-                  </button>
-               </form>
+            <div className="max-w-md mx-auto bg-white p-8 rounded-[2rem] shadow-xl">
+              <h2 className="text-2xl font-black mb-6">Acesso Admin</h2>
+              <input type="text" placeholder="Admin" value={adminUserField} onChange={e => setAdminUserField(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl mb-4" />
+              <input type="password" placeholder="Senha" value={adminPassField} onChange={e => setAdminPassField(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl mb-4" />
+              <button onClick={() => { if(adminUserField === ADMIN_USER && adminPassField === ADMIN_PASS) setIsAdminAuthenticated(true) }} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl">Acessar</button>
             </div>
           )
         )}
+
+        {activeTab === 'STORE' && (
+          <div className="max-w-md mx-auto bg-white p-8 rounded-[2.5rem] shadow-xl text-center">
+            <ShoppingBag size={48} className="mx-auto text-indigo-600 mb-4" />
+            <h2 className="text-2xl font-black mb-8">Comprar Séries</h2>
+            <div className="flex items-center justify-between bg-slate-50 p-6 rounded-2xl mb-8">
+              <button onClick={() => setPurchaseQty(Math.max(1, purchaseQty - 1))} className="w-12 h-12 bg-white rounded-xl shadow font-black">-</button>
+              <span className="text-4xl font-black">{purchaseQty}</span>
+              <button onClick={() => setPurchaseQty(purchaseQty + 1)} className="w-12 h-12 bg-white rounded-xl shadow font-black">+</button>
+            </div>
+            <button onClick={handlePurchase} disabled={event.status !== 'SETUP'} className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl shadow-xl disabled:opacity-50">Confirmar R$ {(purchaseQty * event.cardPrice).toFixed(2)}</button>
+          </div>
+        )}
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-xl border-t border-slate-100 px-8 py-5 z-40">
-        <div className="max-w-md mx-auto flex justify-around">
-          <button onClick={() => setActiveTab('USER')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'USER' ? '' : 'text-slate-300'}`} style={{ color: activeTab === 'USER' ? visual.primaryColor : undefined }}>
-            <LayoutDashboard size={24} /><span className="text-[10px] font-black uppercase">Meu Jogo</span>
-          </button>
-          <button onClick={() => setActiveTab('STORE')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'STORE' ? '' : 'text-slate-300'}`} style={{ color: activeTab === 'STORE' ? visual.primaryColor : undefined }}>
-            <Wallet size={24} /><span className="text-[10px] font-black uppercase">Loja</span>
-          </button>
-          <button onClick={() => setActiveTab('ADMIN')} className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'ADMIN' ? '' : 'text-slate-300'}`} style={{ color: activeTab === 'ADMIN' ? visual.primaryColor : undefined }}>
-            <Settings size={24} /><span className="text-[10px] font-black uppercase">Painel</span>
-          </button>
-          <button onClick={handleLogout} className="flex flex-col items-center gap-1 text-slate-300 hover:text-rose-500 transition-colors">
-            <ArrowRight size={24} /><span className="text-[10px] font-black uppercase">Sair</span>
-          </button>
-        </div>
+      <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-md bg-white/80 backdrop-blur-xl h-20 rounded-[2.5rem] shadow-2xl flex items-center justify-around px-4 z-40 border">
+        <button onClick={() => setActiveTab('USER')} className={`flex flex-col items-center ${activeTab === 'USER' ? 'text-indigo-600' : 'text-slate-300'}`}><LayoutDashboard size={24} /><span className="text-[9px] font-black uppercase">Meu Jogo</span></button>
+        <button onClick={() => setActiveTab('STORE')} className={`flex flex-col items-center ${activeTab === 'STORE' ? 'text-indigo-600' : 'text-slate-300'}`}><ShoppingBag size={24} /><span className="text-[9px] font-black uppercase">Loja</span></button>
+        <button onClick={() => setActiveTab('ADMIN')} className={`flex flex-col items-center ${activeTab === 'ADMIN' ? 'text-indigo-600' : 'text-slate-300'}`}><Settings size={24} /><span className="text-[9px] font-black uppercase">Admin</span></button>
+        <button onClick={() => { localStorage.removeItem('bingo_user_session'); setUser(null); }} className="flex flex-col items-center text-slate-300"><ArrowRight size={24} /><span className="text-[9px] font-black uppercase">Sair</span></button>
       </nav>
-      {showFinalScoreboard && <FinalScoreboard event={event} onClose={() => setShowFinalScoreboard(false)} onReset={handleResetEvent} />}
+
+      {showFinalScoreboard && event && (
+        <FinalScoreboard event={event} onClose={() => setShowFinalScoreboard(false)} onReset={() => socket.emit('adminReset')} />
+      )}
     </div>
   );
 };
 
 export default App;
-
