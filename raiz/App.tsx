@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Card, BingoEvent, VisualConfig, WinnerRecord, ChatMessage } from './types';
+import { User, Card, BingoEvent, VisualConfig, ChatMessage } from './types';
 import { announceBall, announceWinner } from './services/ttsService';
 import { AdminPanel } from './components/AdminPanel';
 import { UserDashboard } from './components/UserDashboard';
@@ -11,6 +11,21 @@ import { PRIZE_LABELS } from './constants';
 
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = '132435OLI';
+
+// Estado inicial vazio mas válido para evitar quebras de interface
+const INITIAL_EVENT: BingoEvent = {
+  id: 'BINGO_SESSION',
+  name: 'Bingo Master',
+  cardPrice: 10,
+  maxCards: 1000,
+  drawnBalls: [],
+  status: 'SETUP',
+  currentPrizeStep: 'QUADRA',
+  winners: [],
+  startMode: 'MANUAL',
+  autoInterval: 5,
+  onlineCount: 0
+};
 
 const DEFAULT_VISUAL: VisualConfig = {
   appName: 'Bingo Master',
@@ -29,7 +44,7 @@ const App: React.FC = () => {
   
   const [visual, setVisual] = useState<VisualConfig>(DEFAULT_VISUAL);
   const [activeTab, setActiveTab] = useState<'USER' | 'ADMIN' | 'STORE'>('USER');
-  const [event, setEvent] = useState<BingoEvent | null>(null);
+  const [event, setEvent] = useState<BingoEvent>(INITIAL_EVENT);
   const [allCards, setAllCards] = useState<Card[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -45,37 +60,31 @@ const App: React.FC = () => {
   const [loginWhatsapp, setLoginWhatsapp] = useState('');
   const [registerName, setRegisterName] = useState('');
   const [registerPix, setRegisterPix] = useState('');
-  
   const [purchaseQty, setPurchaseQty] = useState(1);
 
-  // Monitor de Sincronização
+  // Escuta de eventos Socket.io
   useEffect(() => {
+    // Ao conectar ou reconectar, pedimos o estado atual
+    const onConnect = () => socket.emit('requestSync');
+    
     const handleInitialState = (data: any) => {
-      console.log('[CLIENT] Dados recebidos do servidor:', data);
-      setEvent(data.event);
-      setAllCards(data.cards);
-      setAllUsers(data.users);
-      setChatMessages(data.messages);
-      if (data.event.status === 'FINISHED') setShowFinalScoreboard(true);
+      if (data.event) setEvent(data.event);
+      if (data.cards) setAllCards(data.cards);
+      if (data.users) setAllUsers(data.users);
+      if (data.messages) setChatMessages(data.messages);
+      if (data.event?.status === 'FINISHED') setShowFinalScoreboard(true);
     };
 
-    // Registrar ouvintes ANTES de pedir sincronização
+    socket.on('connect', onConnect);
     socket.on('initialState', handleInitialState);
-    socket.on('eventUpdate', (updatedEvent) => setEvent(updatedEvent));
+    socket.on('eventUpdate', (updated) => setEvent(updated));
     socket.on('chatUpdate', (msgs) => setChatMessages(msgs));
     socket.on('cardsUpdate', (cards) => setAllCards(cards));
     socket.on('autoStatusUpdate', (status) => setIsAdminAutoDrawing(status));
+    socket.on('usersUpdate', (users) => setAllUsers(users));
     
-    socket.on('usersUpdate', (users) => {
-      setAllUsers(users);
-      if (user) {
-        const me = users.find(u => u.id === user.id);
-        if (me) setUser(me);
-      }
-    });
-    
-    socket.on('ballDrawn', ({ ball, event }) => {
-      setEvent(event);
+    socket.on('ballDrawn', ({ ball, event: updatedEvent }) => {
+      setEvent(updatedEvent);
       announceBall(ball);
     });
 
@@ -109,28 +118,28 @@ const App: React.FC = () => {
       localStorage.setItem('bingo_user_session', JSON.stringify(u));
     });
 
-    socket.on('balanceUpdate', (bal) => setUser(prev => prev ? {...prev, balance: bal} : null));
+    socket.on('balanceUpdate', (bal) => {
+      if (user) {
+        const newUser = { ...user, balance: bal };
+        setUser(newUser);
+        localStorage.setItem('bingo_user_session', JSON.stringify(newUser));
+      }
+    });
+
     socket.on('purchaseSuccess', () => {
-      setAnnouncement("Séries adquiridas com sucesso!");
-      setTimeout(() => setAnnouncement(''), 3000);
+      setAnnouncement("Séries adquiridas!");
+      setTimeout(() => setAnnouncement(''), 2000);
       setActiveTab('USER');
     });
+
     socket.on('authError', (err) => alert(err));
 
-    // Agora sim, pede os dados
-    socket.emit('requestSync');
-
-    // Fallback: Se em 3 segundos não sincronizar, tenta de novo
-    const syncRetry = setInterval(() => {
-      if (!event) {
-        console.log('[CLIENT] Tentando sincronizar novamente...');
-        socket.emit('requestSync');
-      }
-    }, 2500);
+    // Se já estiver conectado no momento do mount, solicita sync
+    if (socket.connected) onConnect();
 
     return () => {
-      clearInterval(syncRetry);
-      socket.off('initialState');
+      socket.off('connect', onConnect);
+      socket.off('initialState', handleInitialState);
       socket.off('eventUpdate');
       socket.off('chatUpdate');
       socket.off('cardsUpdate');
@@ -146,23 +155,21 @@ const App: React.FC = () => {
       socket.off('purchaseSuccess');
       socket.off('authError');
     };
-  }, [user?.id, event === null]);
+  }, [user?.id]);
 
   const handleLogout = () => {
     localStorage.removeItem('bingo_user_session');
     setUser(null);
   };
 
-  const userSeriesCount = useMemo(() => {
-    if (!user) return 0;
-    const myCards = allCards.filter(c => c.userId === user.id);
-    return new Set(myCards.map(c => c.serieId)).size;
-  }, [allCards, user]);
+  const userCards = useMemo(() => allCards.filter(c => c.userId === user?.id), [allCards, user?.id]);
+  const userSeriesCount = useMemo(() => new Set(userCards.map(c => c.serieId)).size, [userCards]);
 
+  // LOGIN: Única tela que pode "bloquear" o acesso
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6 bg-slate-950">
-        <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl w-full max-w-[380px] border-b-8 border-indigo-600">
+        <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl w-full max-w-[380px] border-b-8 border-indigo-600 animate-in fade-in zoom-in duration-300">
           <div className="text-center mb-8">
             <div className="w-16 h-16 bg-indigo-600 text-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg rotate-3"><Trophy size={32} /></div>
             <h1 className="text-2xl font-black text-slate-900 uppercase">Acesse o Bingo</h1>
@@ -176,9 +183,6 @@ const App: React.FC = () => {
               <input type="text" placeholder="Nome Completo" value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold" required />
             )}
             <input type="tel" placeholder="WhatsApp" value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold" required />
-            {authMode === 'REGISTER' && (
-              <input type="text" placeholder="Chave PIX (opcional)" value={registerPix} onChange={e => setRegisterPix(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold" />
-            )}
             <button type="submit" className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase shadow-xl active:scale-95 transition-all">
               {authMode === 'LOGIN' ? 'Entrar Agora' : 'Finalizar Cadastro'}
             </button>
@@ -191,20 +195,9 @@ const App: React.FC = () => {
     );
   }
 
-  if (!event) {
-    return (
-      <div className="h-screen flex flex-col items-center justify-center bg-slate-50 gap-4">
-        <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-        <p className="font-black text-slate-400 uppercase tracking-widest animate-pulse">Sincronizando Sistema...</p>
-        <button onClick={() => window.location.reload()} className="mt-4 px-6 py-2 bg-indigo-100 text-indigo-600 rounded-xl font-black text-xs uppercase">Forçar Recarregamento</button>
-      </div>
-    );
-  }
-
-  const userCards = allCards.filter(c => c.userId === user.id);
-
+  // DASHBOARD: Abre imediatamente
   return (
-    <div className="h-screen flex flex-row overflow-hidden bg-slate-50">
+    <div className="h-screen flex flex-row overflow-hidden bg-slate-50 animate-in fade-in duration-500">
       {announcement && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-indigo-950/80 p-4 backdrop-blur-sm">
           <div className="bg-white p-10 rounded-[3rem] text-center shadow-2xl animate-bounce border-b-8 border-indigo-600 max-w-sm">
@@ -214,6 +207,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* NAVEGAÇÃO LATERAL */}
       <nav className="w-20 md:w-24 bg-white border-r border-slate-200 flex flex-col items-center py-8 gap-8 z-40 shrink-0 shadow-sm">
         <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center shadow-lg rotate-3 mb-4"><Trophy size={24} /></div>
         
@@ -238,7 +232,7 @@ const App: React.FC = () => {
         <div className="flex-1"></div>
 
         {event.supportWhatsapp && (
-          <a href={`https://wa.me/55${event.supportWhatsapp}`} target="_blank" className="flex flex-col items-center gap-1 text-emerald-500 hover:scale-110 transition-all">
+          <a href={`https://wa.me/55${event.supportWhatsapp}`} target="_blank" className="flex flex-col items-center gap-1 text-emerald-500 hover:scale-110 transition-all mb-4">
             <Phone size={24} />
             <span className="text-[8px] font-black uppercase">Suporte</span>
           </a>
@@ -247,11 +241,12 @@ const App: React.FC = () => {
         <button onClick={handleLogout} className="text-rose-400 hover:text-rose-600 transition-colors mb-4"><LogOut size={24} /></button>
       </nav>
 
+      {/* ÁREA PRINCIPAL */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white border-b px-8 py-4 flex justify-between items-center shrink-0 shadow-sm">
           <h1 className="font-black text-slate-900 uppercase tracking-tighter text-lg">{visual.appName}</h1>
           <div className="flex items-center gap-4">
-            <div className="bg-emerald-50 px-4 py-2 rounded-2xl border border-emerald-100 flex flex-col items-end">
+            <div className="bg-emerald-50 px-4 py-2 rounded-2xl border border-emerald-100 flex flex-col items-end shadow-sm">
               <p className="text-[9px] font-black text-emerald-400 uppercase leading-none">Seu Saldo</p>
               <p className="font-black text-emerald-600 text-lg">R$ {user.balance.toFixed(2)}</p>
             </div>
@@ -272,7 +267,7 @@ const App: React.FC = () => {
               <div className="max-w-md w-full space-y-8">
                 <div className="bg-white p-10 rounded-[3rem] shadow-xl text-center border-b-8 border-indigo-600">
                   <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-6"><Layers size={40} /></div>
-                  <h2 className="text-3xl font-black mb-2 uppercase text-slate-900">Comprar Séries</h2>
+                  <h2 className="text-3xl font-black mb-2 uppercase text-slate-900 leading-tight">Comprar Séries</h2>
                   <p className="text-slate-400 font-bold mb-8 uppercase text-xs tracking-widest">Cada série contém 6 cartelas</p>
                   
                   <div className="flex items-center justify-center gap-8 mb-10">
@@ -322,14 +317,14 @@ const App: React.FC = () => {
               ) : (
                 <div className="max-w-md mx-auto bg-white p-12 rounded-[3.5rem] shadow-2xl border border-slate-100 mt-12 text-center">
                   <div className="w-20 h-20 bg-slate-900 text-white rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-xl"><Settings size={40} /></div>
-                  <h2 className="text-3xl font-black mb-8 uppercase text-slate-900">Acesso Restrito</h2>
+                  <h2 className="text-3xl font-black mb-8 uppercase text-slate-900">Acesso Administrativo</h2>
                   <div className="space-y-4 text-left">
                     <input type="text" placeholder="Usuário Admin" value={adminUserField} onChange={e => setAdminUserField(e.target.value)} className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold" />
                     <input type="password" placeholder="Senha" value={adminPassField} onChange={e => setAdminPassField(e.target.value)} className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold" />
                     <button onClick={() => {
                       if (adminUserField === ADMIN_USER && adminPassField === ADMIN_PASS) setIsAdminAuthenticated(true);
-                      else alert("Credenciais incorretas.");
-                    }} className="w-full py-6 bg-slate-900 text-white font-black rounded-2xl shadow-xl active:scale-95 uppercase text-lg">Entrar</button>
+                      else alert("Credenciais inválidas.");
+                    }} className="w-full py-6 bg-slate-900 text-white font-black rounded-2xl shadow-xl active:scale-95 uppercase text-lg">Entrar no Painel</button>
                   </div>
                 </div>
               )}
@@ -344,5 +339,6 @@ const App: React.FC = () => {
 };
 
 export default App;
+
 
 
