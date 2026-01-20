@@ -7,7 +7,10 @@ import { generateFullSeriesForUser, checkWinners } from './services/bingoService
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: "*" } });
+const io = new Server(httpServer, { 
+  cors: { origin: "*" },
+  allowEIO3: true // Compatibilidade extra
+});
 
 // ESTADO GLOBAL CENTRALIZADO NO SERVIDOR
 let users: User[] = [];
@@ -41,6 +44,7 @@ let globalEvent: BingoEvent = {
 let drawInterval: any = null;
 
 const sendSync = (socket: any) => {
+  console.log(`[SERVER] Sincronizando socket: ${socket.id}`);
   socket.emit('initialState', {
     event: globalEvent,
     cards: globalCards,
@@ -64,7 +68,6 @@ const processBallDraw = () => {
   const nextBall = available[Math.floor(Math.random() * available.length)];
   globalEvent.drawnBalls.push(nextBall);
 
-  // Marcar internamente no servidor para validação de ganhadores
   globalCards.forEach(card => {
     if (card.numbers.includes(nextBall) && !card.markedNumbers.includes(nextBall)) {
       card.markedNumbers.push(nextBall);
@@ -109,11 +112,12 @@ io.on('connection', (socket) => {
   onlineCount++;
   globalEvent.onlineCount = onlineCount;
   
-  // Envia estado atual ao conectar
+  // Sincroniza imediatamente mas também espera o pedido do cliente
   sendSync(socket);
 
-  // Permite que o cliente peça sincronização se perder o estado
-  socket.on('requestSync', () => sendSync(socket));
+  socket.on('requestSync', () => {
+    sendSync(socket);
+  });
 
   socket.on('registerUser', (userData: any) => {
     let user = users.find(u => u.whatsapp === userData.whatsapp);
@@ -204,7 +208,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('adminReset', () => {
-    clearInterval(drawInterval);
+    if (drawInterval) clearInterval(drawInterval);
     drawInterval = null;
     globalEvent.status = 'SETUP';
     globalEvent.drawnBalls = [];
@@ -224,5 +228,6 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-httpServer.listen(PORT, () => console.log(`SERVIDOR BINGO ATIVO: Porta ${PORT}`));
+httpServer.listen(PORT, () => console.log(`[BINGO-SERVER] Rodando na porta ${PORT}`));
+
 
