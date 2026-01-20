@@ -1,11 +1,11 @@
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { User, Card, BingoEvent, VisualConfig, WinnerRecord, ChatMessage } from './types';
-import { announceBall, announceWinner, announcePrizes } from './services/ttsService';
+import { announceBall, announceWinner } from './services/ttsService';
 import { AdminPanel } from './components/AdminPanel';
 import { UserDashboard } from './components/UserDashboard';
 import { FinalScoreboard } from './components/FinalScoreboard';
-import { LayoutDashboard, Settings, Trophy, Wallet, X, Heart, CreditCard, LogOut, ArrowUpCircle, Layers, ShoppingCart, Info, Phone } from 'lucide-react';
+import { LayoutDashboard, Settings, Trophy, LogOut, Layers, ShoppingCart, Phone } from 'lucide-react';
 import { socket } from './services/socket';
 import { PRIZE_LABELS } from './constants';
 
@@ -48,19 +48,19 @@ const App: React.FC = () => {
   
   const [purchaseQty, setPurchaseQty] = useState(1);
 
+  // Monitor de Sincronização
   useEffect(() => {
-    // Pedir sincronização caso a conexão já tenha ocorrido antes do mount
-    socket.emit('requestSync');
-
-    socket.on('initialState', (data) => {
+    const handleInitialState = (data: any) => {
+      console.log('[CLIENT] Dados recebidos do servidor:', data);
       setEvent(data.event);
       setAllCards(data.cards);
       setAllUsers(data.users);
       setChatMessages(data.messages);
       if (data.event.status === 'FINISHED') setShowFinalScoreboard(true);
-      else setShowFinalScoreboard(false);
-    });
+    };
 
+    // Registrar ouvintes ANTES de pedir sincronização
+    socket.on('initialState', handleInitialState);
     socket.on('eventUpdate', (updatedEvent) => setEvent(updatedEvent));
     socket.on('chatUpdate', (msgs) => setChatMessages(msgs));
     socket.on('cardsUpdate', (cards) => setAllCards(cards));
@@ -82,7 +82,7 @@ const App: React.FC = () => {
     socket.on('winnersAnnounced', (winners) => {
       if (winners.length > 0) {
         announceWinner(winners[0].prize, winners[0].userName);
-        setAnnouncement(`VITORIA! ${winners[0].userName} - ${PRIZE_LABELS[winners[0].prize]}`);
+        setAnnouncement(`VITÓRIA! ${winners[0].userName} - ${PRIZE_LABELS[winners[0].prize]}`);
         setTimeout(() => setAnnouncement(''), 5000);
       }
     });
@@ -110,21 +110,43 @@ const App: React.FC = () => {
     });
 
     socket.on('balanceUpdate', (bal) => setUser(prev => prev ? {...prev, balance: bal} : null));
-    
     socket.on('purchaseSuccess', () => {
       setAnnouncement("Séries adquiridas com sucesso!");
       setTimeout(() => setAnnouncement(''), 3000);
       setActiveTab('USER');
     });
-
     socket.on('authError', (err) => alert(err));
 
+    // Agora sim, pede os dados
+    socket.emit('requestSync');
+
+    // Fallback: Se em 3 segundos não sincronizar, tenta de novo
+    const syncRetry = setInterval(() => {
+      if (!event) {
+        console.log('[CLIENT] Tentando sincronizar novamente...');
+        socket.emit('requestSync');
+      }
+    }, 2500);
+
     return () => {
-      socket.off('initialState'); socket.off('eventUpdate'); socket.off('chatUpdate');
-      socket.off('usersUpdate'); socket.off('ballDrawn'); socket.off('winnersAnnounced');
-      socket.off('cardsUpdate'); socket.off('gameStarted'); socket.off('gameReset');
+      clearInterval(syncRetry);
+      socket.off('initialState');
+      socket.off('eventUpdate');
+      socket.off('chatUpdate');
+      socket.off('cardsUpdate');
+      socket.off('autoStatusUpdate');
+      socket.off('usersUpdate');
+      socket.off('ballDrawn');
+      socket.off('winnersAnnounced');
+      socket.off('gameStarted');
+      socket.off('gameReset');
+      socket.off('registrationSuccess');
+      socket.off('loginSuccess');
+      socket.off('balanceUpdate');
+      socket.off('purchaseSuccess');
+      socket.off('authError');
     };
-  }, [user?.id]);
+  }, [user?.id, event === null]);
 
   const handleLogout = () => {
     localStorage.removeItem('bingo_user_session');
@@ -137,7 +159,6 @@ const App: React.FC = () => {
     return new Set(myCards.map(c => c.serieId)).size;
   }, [allCards, user]);
 
-  // CORREÇÃO: Renderiza Login ANTES de checar o estado do evento
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6 bg-slate-950">
@@ -152,11 +173,11 @@ const App: React.FC = () => {
             else socket.emit('loginUser', { whatsapp: loginWhatsapp });
           }} className="space-y-4">
             {authMode === 'REGISTER' && (
-              <input type="text" placeholder="Nome Completo" value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold shadow-inner" required />
+              <input type="text" placeholder="Nome Completo" value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold" required />
             )}
-            <input type="tel" placeholder="WhatsApp" value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold shadow-inner" required />
+            <input type="tel" placeholder="WhatsApp" value={loginWhatsapp} onChange={e => setLoginWhatsapp(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold" required />
             {authMode === 'REGISTER' && (
-              <input type="text" placeholder="Chave PIX (opcional)" value={registerPix} onChange={e => setRegisterPix(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold shadow-inner" />
+              <input type="text" placeholder="Chave PIX (opcional)" value={registerPix} onChange={e => setRegisterPix(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold" />
             )}
             <button type="submit" className="w-full py-5 bg-indigo-600 text-white font-black rounded-2xl uppercase shadow-xl active:scale-95 transition-all">
               {authMode === 'LOGIN' ? 'Entrar Agora' : 'Finalizar Cadastro'}
@@ -170,8 +191,15 @@ const App: React.FC = () => {
     );
   }
 
-  // Só mostra carregando se o usuário estiver logado mas o evento ainda não chegou
-  if (!event) return <div className="h-screen flex items-center justify-center font-black animate-pulse bg-slate-50 text-slate-400 uppercase tracking-widest">Sincronizando com Servidor...</div>;
+  if (!event) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center bg-slate-50 gap-4">
+        <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+        <p className="font-black text-slate-400 uppercase tracking-widest animate-pulse">Sincronizando Sistema...</p>
+        <button onClick={() => window.location.reload()} className="mt-4 px-6 py-2 bg-indigo-100 text-indigo-600 rounded-xl font-black text-xs uppercase">Forçar Recarregamento</button>
+      </div>
+    );
+  }
 
   const userCards = allCards.filter(c => c.userId === user.id);
 
@@ -316,4 +344,5 @@ const App: React.FC = () => {
 };
 
 export default App;
+
 
