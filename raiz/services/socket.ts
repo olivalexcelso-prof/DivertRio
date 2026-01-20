@@ -1,15 +1,21 @@
 
 import { io } from "https://esm.sh/socket.io-client@^4.8.1";
 
-// Conecta ao servidor no mesmo host da aplicação
-export const socket = io(window.location.origin, {
-  transports: ['websocket', 'polling']
+const SOCKET_URL = window.location.origin;
+
+export const socket = io(SOCKET_URL, {
+  transports: ['websocket', 'polling'],
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  autoConnect: true,
+  timeout: 10000
 });
 
 socket.on("connect", () => {
-  console.log("Conectado ao servidor central de Bingo.");
+  console.log("[SOCKET] Conexão estabelecida com sucesso.");
 });
 
-socket.on("disconnect", () => {
-  console.log("Desconectado do servidor.");
+socket.on("connect_error", (error) => {
+  console.error("[SOCKET] Falha na conexão:", error.message);
 });
